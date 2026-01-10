@@ -10,6 +10,7 @@
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { runPythonQuery } from './db-utils.js';
+import { generateSessionKey, signEntry } from './crypto-signing.js';
 
 /**
  * Get the path to the sessions database.
@@ -150,7 +151,9 @@ except Exception as e:
 }
 
 /**
- * Register a new session with provenance metadata.
+ * Register a new session with provenance metadata and signature.
+ *
+ * V1.7: Adds HMAC-SHA256 signature to session entries.
  *
  * @param sessionId - Unique session identifier
  * @param projectDir - Project directory path
@@ -164,6 +167,53 @@ export function registerSession(
 ): { success: boolean; error?: string } {
   const dbPath = getSessionsDbPath();
 
+  try {
+    // V1.7: Generate session key if not exists and sign the session entry
+    generateSessionKey(sessionId);
+
+    // Build data to sign
+    const now_ts = Math.floor(Date.now() / 1000);
+    const origin_session_val = originSession;
+
+    const dataToSign = {
+      id: sessionId,
+      project_dir: projectDir,
+      status: 'running',
+      origin_session: origin_session_val,
+      created_at_ts: now_ts,
+    };
+
+    // Sign the entry
+    const signature = signEntry(dataToSign, sessionId);
+
+    // Pass signature to Python script
+    return registerSessionWithSignature(
+      sessionId,
+      projectDir,
+      origin_session_val,
+      now_ts,
+      signature,
+      dbPath
+    );
+  } catch (err) {
+    return {
+      success: false,
+      error: `Signing failed: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+}
+
+/**
+ * Internal: Register session with pre-computed signature
+ */
+function registerSessionWithSignature(
+  sessionId: string,
+  projectDir: string,
+  originSession: string | null,
+  created_at_ts: number,
+  signature: string,
+  dbPath: string
+): { success: boolean; error?: string } {
   const pythonScript = `
 import sqlite3
 import sys
@@ -174,6 +224,8 @@ db_path = sys.argv[1]
 session_id = sys.argv[2]
 project_dir = sys.argv[3]
 origin_session = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != 'null' else None
+created_at_ts = int(sys.argv[5]) if len(sys.argv) > 5 else None
+signature = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] != 'null' else None
 
 try:
     # Ensure directory exists
@@ -199,16 +251,18 @@ try:
     """)
 
     now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-    now_ts = int(datetime.now(timezone.utc).timestamp())
+    # Use provided timestamp if given, otherwise compute
+    if created_at_ts is None:
+        created_at_ts = int(datetime.now(timezone.utc).timestamp())
 
-    # Insert with provenance
+    # Insert with provenance and signature
     conn.execute(
         """
         INSERT OR REPLACE INTO sessions
-        (id, project_dir, started_at, status, origin_session, created_at_ts)
-        VALUES (?, ?, ?, 'running', ?, ?)
+        (id, project_dir, started_at, status, origin_session, created_at_ts, signature)
+        VALUES (?, ?, ?, 'running', ?, ?, ?)
         """,
-        (session_id, project_dir, now, origin_session, now_ts)
+        (session_id, project_dir, now, origin_session, created_at_ts, signature)
     )
 
     conn.commit()
@@ -223,7 +277,9 @@ except Exception as e:
     dbPath,
     sessionId,
     projectDir,
-    originSession || 'null'
+    originSession || 'null',
+    String(created_at_ts),
+    signature
   ];
 
   const result = runPythonQuery(pythonScript, args);
