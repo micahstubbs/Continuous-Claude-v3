@@ -137,7 +137,7 @@ try:
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA journal_mode = WAL")
 
-    # Create table if not exists (with source column)
+    # Create table if not exists (with source and provenance columns)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
@@ -153,26 +153,46 @@ try:
             completed_at TEXT,
             status TEXT DEFAULT 'running',
             error_message TEXT,
-            source TEXT
+            source TEXT,
+            origin_session TEXT,
+            origin_agent TEXT,
+            created_at_ts INTEGER,
+            signature TEXT
         )
     """)
 
-    # Migration: add source column if it doesn't exist
+    # Migration: add source and provenance columns if they don't exist
     cursor = conn.execute("PRAGMA table_info(agents)")
     columns = {row[1] for row in cursor.fetchall()}
     if 'source' not in columns:
         conn.execute("ALTER TABLE agents ADD COLUMN source TEXT")
+    if 'origin_session' not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN origin_session TEXT")
+    if 'origin_agent' not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN origin_agent TEXT")
+    if 'created_at_ts' not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN created_at_ts INTEGER")
+    if 'signature' not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN signature TEXT")
 
     now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    now_ts = int(datetime.now(timezone.utc).timestamp())
     ppid = os.getppid() if pid else None
+
+    # Provenance: session that spawned the agent
+    origin_session = session_id
+    # origin_agent would be the parent agent ID if available, otherwise None
+    origin_agent = os.environ.get('AGENT_ID')
 
     conn.execute(
         """
         INSERT OR REPLACE INTO agents
-        (id, session_id, pattern, pid, ppid, spawned_at, status, source)
-        VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+        (id, session_id, pattern, pid, ppid, spawned_at, status, source,
+         origin_session, origin_agent, created_at_ts)
+        VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
         """,
-        (agent_id, session_id, pattern, pid, ppid, now, source)
+        (agent_id, session_id, pattern, pid, ppid, now, source,
+         origin_session, origin_agent, now_ts)
     )
     conn.commit()
     conn.close()
@@ -438,4 +458,112 @@ except Exception:
 
   const count = parseInt(result.stdout, 10);
   return isNaN(count) ? 0 : count;
+}
+
+/**
+ * Migrate coordination.db schema to add provenance tracking fields.
+ *
+ * Adds the following fields to agents and broadcasts tables:
+ * - origin_session TEXT: Session that created this entry
+ * - origin_agent TEXT: Agent that created this entry
+ * - created_at_ts INTEGER: Unix timestamp of creation (in addition to ISO string)
+ * - signature TEXT: HMAC-SHA256 signature for integrity verification
+ *
+ * Security: V1.1 - Database authentication and integrity (Round 2 audit, CVSS 8.1)
+ *
+ * @returns Object with success boolean and any error message
+ */
+export function migrateCoordinationDbProvenance(): { success: boolean; error?: string } {
+  const dbPath = getDbPath();
+
+  // Skip if database doesn't exist yet - will be created with new schema
+  if (!existsSync(dbPath)) {
+    return { success: true };
+  }
+
+  const pythonScript = `
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path = sys.argv[1]
+
+try:
+    # Ensure directory exists
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
+
+    # Migrate agents table
+    cursor = conn.execute("PRAGMA table_info(agents)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if 'origin_session' not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN origin_session TEXT")
+    if 'origin_agent' not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN origin_agent TEXT")
+    if 'created_at_ts' not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN created_at_ts INTEGER")
+    if 'signature' not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN signature TEXT")
+
+    # Create broadcasts table if it doesn't exist
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            swarm_id TEXT NOT NULL,
+            sender_agent TEXT NOT NULL,
+            broadcast_type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            origin_session TEXT,
+            origin_agent TEXT,
+            created_at_ts INTEGER,
+            signature TEXT
+        )
+    """)
+
+    # Migrate broadcasts table if it exists
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='broadcasts'"
+    )
+    if cursor.fetchone() is not None:
+        cursor = conn.execute("PRAGMA table_info(broadcasts)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if 'origin_session' not in columns:
+            conn.execute("ALTER TABLE broadcasts ADD COLUMN origin_session TEXT")
+        if 'origin_agent' not in columns:
+            conn.execute("ALTER TABLE broadcasts ADD COLUMN origin_agent TEXT")
+        if 'created_at_ts' not in columns:
+            conn.execute("ALTER TABLE broadcasts ADD COLUMN created_at_ts INTEGER")
+        if 'signature' not in columns:
+            conn.execute("ALTER TABLE broadcasts ADD COLUMN signature TEXT")
+
+    # Create index for broadcasts swarm_id lookup
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_broadcasts_swarm_id
+        ON broadcasts(swarm_id, created_at DESC)
+    """)
+
+    conn.commit()
+    conn.close()
+    print("ok")
+except Exception as e:
+    print(f"error: {e}")
+    sys.exit(1)
+`;
+
+  const result = runPythonQuery(pythonScript, [dbPath]);
+
+  if (!result.success || result.stdout !== 'ok') {
+    return {
+      success: false,
+      error: result.stderr || result.stdout || 'Migration failed'
+    };
+  }
+
+  return { success: true };
 }
