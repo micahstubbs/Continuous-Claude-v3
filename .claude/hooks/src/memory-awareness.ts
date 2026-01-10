@@ -22,6 +22,12 @@ import {
   SourceType,
   type ProvenanceMetadata
 } from './shared/provenance-types.js';
+import {
+  applyMemoryLimits,
+  checkMemoryLimits,
+  formatBytes,
+  DEFAULT_MEMORY_LIMITS
+} from './shared/memory-limits.js';
 
 interface UserPromptSubmitInput {
   session_id: string;
@@ -151,7 +157,7 @@ function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch |
   const result = spawnSync('uv', [
     'run', 'python', 'scripts/core/recall_learnings.py',
     '--query', searchTerm,  // Single keyword for text match
-    '--k', '3',
+    '--k', String(DEFAULT_MEMORY_LIMITS.maxResults), // V5: Enforce max results
     '--json',
     '--text-only'  // Fast text search for hints
   ], {
@@ -161,7 +167,7 @@ function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch |
       ...process.env,
       PYTHONPATH: opcDir
     },
-    timeout: 5000  // 5s timeout for fast check
+    timeout: DEFAULT_MEMORY_LIMITS.maxExecutionMs // V5: Enforce execution timeout
   });
 
   if (result.status !== 0 || !result.stdout) {
@@ -199,8 +205,26 @@ function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch |
       return null;
     }
 
+    // V5: Apply memory size limits before extracting results
+    const limitedResults = applyMemoryLimits(
+      safeResults.map((r: any) => ({ ...r, content: r.content || '' })),
+      DEFAULT_MEMORY_LIMITS
+    );
+
+    // Log if results were truncated
+    const limits = checkMemoryLimits(limitedResults, DEFAULT_MEMORY_LIMITS);
+    if (!limits.within_limits) {
+      logSecurityEvent(projectDir, {
+        event: 'MEMORY_SIZE_LIMIT_ENFORCED',
+        exceeded: limits.exceeded,
+        total_bytes: limits.total_bytes,
+        max_allowed: DEFAULT_MEMORY_LIMITS.maxTotalBytes,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     // Extract structured results with better previews
-    const results: LearningResult[] = safeResults.slice(0, 3).map((r: any) => {
+    const results: LearningResult[] = limitedResults.slice(0, 3).map((r: any) => {
       const content = r.content || '';
       // Get first meaningful line up to 120 chars
       const preview = content
