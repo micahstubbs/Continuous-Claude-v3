@@ -15,6 +15,13 @@ import { readFileSync, existsSync, appendFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { containsPromptInjection, detectPromptInjection } from './shared/security-utils.js';
+import {
+  createProvenance,
+  formatProvenance,
+  TrustLevel,
+  SourceType,
+  type ProvenanceMetadata
+} from './shared/provenance-types.js';
 
 interface UserPromptSubmitInput {
   session_id: string;
@@ -28,6 +35,12 @@ interface LearningResult {
   type: string;
   content: string;
   score: number;
+  session_id?: string;
+  created_at?: string;
+}
+
+interface LearningResultWithProvenance extends LearningResult {
+  provenance: ProvenanceMetadata;
 }
 
 interface MemoryMatch {
@@ -245,10 +258,30 @@ async function main() {
   const match = checkMemoryRelevance(intent, projectDir);
 
   if (match) {
-    // Build structured context for Claude
-    const resultLines = match.results.map((r, i) =>
-      `${i + 1}. [${r.type}] ${r.content} (id: ${r.id})`
-    ).join('\n');
+    // V3.3: Add provenance metadata to all recalled memories
+    const sessionId = input.session_id || 'unknown';
+    const resultsWithProvenance: LearningResultWithProvenance[] = match.results.map(r => {
+      // Create provenance metadata for this memory entry
+      const provenance = createProvenance({
+        session_id: r.session_id || sessionId, // Original session if available
+        agent_id: null, // Memory recall doesn't have agent context
+        trust_level: TrustLevel.Medium, // Database source, unsigned
+        source_type: SourceType.Memory,
+        content: r.content,
+        // No signature available from recall query (read path V1.9 will validate)
+      });
+
+      return {
+        ...r,
+        provenance
+      };
+    });
+
+    // Build structured context for Claude with provenance tags
+    const resultLines = resultsWithProvenance.map((r, i) => {
+      const provenanceTag = formatProvenance(r.provenance, false);
+      return `${i + 1}. ${provenanceTag} [${r.type}] ${r.content} (id: ${r.id})`;
+    }).join('\n');
 
     const claudeContext = `MEMORY MATCH (${match.count} results) for "${intent}":\n${resultLines}\nUse /recall "${intent}" for full content. Disclose if helpful.`;
 

@@ -3,6 +3,13 @@ import { readFileSync, existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { containsPromptInjection, sanitizeContent } from './shared/security-utils';
+import {
+  createProvenance,
+  formatProvenance,
+  TrustLevel,
+  SourceType,
+  type ProvenanceMetadata
+} from './shared/provenance-types.js';
 
 interface PreToolUseInput {
     session_id: string;
@@ -130,6 +137,9 @@ print(json.dumps(broadcasts))
         const broadcasts = JSON.parse(result.stdout.trim() || '[]');
 
         if (broadcasts.length > 0) {
+            // V3.4: Add provenance metadata to all broadcast messages
+            const sessionId = input.session_id || 'unknown';
+
             let contextMessage = '\n--- SWARM BROADCASTS ---\n';
             for (const b of broadcasts) {
                 // Validate sender matches safe pattern
@@ -143,7 +153,18 @@ print(json.dumps(broadcasts))
                 // Sanitize payload to prevent injection
                 const safePayload = sanitizeBroadcastPayload(b.payload);
 
-                contextMessage += `[${type}] from ${sender}:\n`;
+                // Create provenance metadata for this broadcast
+                const provenance = createProvenance({
+                    session_id: sessionId, // Current session receiving the broadcast
+                    agent_id: b.sender, // Sender is the origin agent
+                    trust_level: TrustLevel.Medium, // Database source, unsigned
+                    source_type: SourceType.Broadcast,
+                    content: safePayload,
+                    // No signature available from query (V1.8 read path will validate)
+                });
+
+                const provenanceTag = formatProvenance(provenance, false);
+                contextMessage += `${provenanceTag} [${type}] from ${sender}:\n`;
                 contextMessage += `  ${safePayload}\n`;
             }
             contextMessage += '------------------------\n';
