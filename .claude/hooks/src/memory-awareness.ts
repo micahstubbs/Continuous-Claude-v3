@@ -28,6 +28,7 @@ import {
   formatBytes,
   DEFAULT_MEMORY_LIMITS
 } from './shared/memory-limits.js';
+import { ContextBroker } from './shared/context-broker.js';
 
 interface UserPromptSubmitInput {
   session_id: string;
@@ -282,9 +283,12 @@ async function main() {
   const match = checkMemoryRelevance(intent, projectDir);
 
   if (match) {
-    // V3.3: Add provenance metadata to all recalled memories
+    // V4.3: Use context broker for trust-enforced assembly
     const sessionId = input.session_id || 'unknown';
-    const resultsWithProvenance: LearningResultWithProvenance[] = match.results.map(r => {
+    const broker = new ContextBroker();
+
+    // Register each memory result as a context block
+    for (const r of match.results) {
       // Create provenance metadata for this memory entry
       const provenance = createProvenance({
         session_id: r.session_id || sessionId, // Original session if available
@@ -295,26 +299,53 @@ async function main() {
         // No signature available from recall query (read path V1.9 will validate)
       });
 
-      return {
-        ...r,
-        provenance
-      };
-    });
+      // Format memory result with type and ID
+      const formattedContent = `[${r.type}] ${r.content} (id: ${r.id})`;
 
-    // Build structured context for Claude with provenance tags
-    const resultLines = resultsWithProvenance.map((r, i) => {
-      const provenanceTag = formatProvenance(r.provenance, false);
-      return `${i + 1}. ${provenanceTag} [${r.type}] ${r.content} (id: ${r.id})`;
-    }).join('\n');
+      broker.register({
+        source_type: SourceType.Memory,
+        content: formattedContent,
+        provenance,
+        metadata: {
+          memory_id: r.id,
+          memory_type: r.type,
+          score: r.score,
+        },
+      });
+    }
 
-    const claudeContext = `MEMORY MATCH (${match.count} results) for "${intent}":\n${resultLines}\nUse /recall "${intent}" for full content. Disclose if helpful.`;
+    // Validate registered blocks
+    const validation = broker.validate();
+    if (!validation.valid) {
+      // Log validation errors but continue with warnings
+      logSecurityEvent(projectDir, {
+        event: 'MEMORY_CONTEXT_VALIDATION_FAILED',
+        errors: validation.errors,
+        warnings: validation.warnings,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
-    console.log(JSON.stringify({
+    // Assemble context with trust markers
+    const assembled = broker.assemble();
+
+    // Build output with trust-aware context
+    const claudeContext = `MEMORY MATCH (${match.count} results) for "${intent}":\n\n${assembled.formatted_output}\n\nUse /recall "${intent}" for full content. Disclose if helpful.`;
+
+    // Include security events in output for monitoring
+    const output: any = {
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
         additionalContext: claudeContext
       }
-    }));
+    };
+
+    // Attach security events if any were logged
+    if (assembled.security_events.length > 0) {
+      output.securityEvents = assembled.security_events;
+    }
+
+    console.log(JSON.stringify(output));
   }
 }
 
