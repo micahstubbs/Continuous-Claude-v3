@@ -12,6 +12,8 @@ import {
 } from './shared/provenance-types.js';
 import { ContextBroker } from './shared/context-broker.js';
 import { monitorAssembledContext } from './shared/context-broker-monitor.js';
+import { verifyEntry } from './shared/crypto-signing.js';
+import { validateSession } from './shared/session-registry.js';
 
 interface PreToolUseInput {
     session_id: string;
@@ -106,7 +108,8 @@ conn.execute("PRAGMA busy_timeout = 5000")
 conn.execute("PRAGMA journal_mode = WAL")
 conn.row_factory = sqlite3.Row
 cursor = conn.execute('''
-    SELECT sender_agent, broadcast_type, payload, created_at
+    SELECT sender_agent, broadcast_type, payload, created_at,
+           origin_session, origin_agent, signature, timestamp
     FROM broadcasts
     WHERE swarm_id = ? AND sender_agent != ?
     ORDER BY created_at DESC
@@ -119,7 +122,11 @@ for row in cursor.fetchall():
         'sender': row['sender_agent'],
         'type': row['broadcast_type'],
         'payload': json.loads(row['payload']),
-        'time': row['created_at']
+        'time': row['created_at'],
+        'origin_session': row['origin_session'],
+        'origin_agent': row['origin_agent'],
+        'signature': row['signature'],
+        'timestamp': row['timestamp']
     })
 
 print(json.dumps(broadcasts))
@@ -138,13 +145,67 @@ print(json.dumps(broadcasts))
 
         const broadcasts = JSON.parse(result.stdout.trim() || '[]');
 
-        if (broadcasts.length > 0) {
+        // V1.8: Validate provenance for all broadcasts
+        const validBroadcasts: any[] = [];
+        const rejectedCount = { missing_provenance: 0, invalid_signature: 0, inactive_session: 0 };
+
+        for (const b of broadcasts) {
+            // Check if provenance fields exist
+            if (!b.origin_session || !b.signature || !b.timestamp) {
+                rejectedCount.missing_provenance++;
+                console.error(`SECURITY: Rejected broadcast from ${b.sender} - missing provenance fields`);
+                continue;
+            }
+
+            // Verify origin_session is active
+            const sessionValidation = validateSession(b.origin_session);
+            if (!sessionValidation.valid) {
+                rejectedCount.inactive_session++;
+                console.error(`SECURITY: Rejected broadcast from ${b.sender} - inactive session ${b.origin_session}`);
+                continue;
+            }
+
+            // Verify signature
+            try {
+                // Reconstruct signed content (must match write path format in db-utils.ts)
+                const dataToVerify = {
+                    swarm_id: swarmId,
+                    sender_agent: b.sender,
+                    broadcast_type: b.type,
+                    payload: typeof b.payload === 'string' ? b.payload : JSON.stringify(b.payload),
+                    timestamp: b.timestamp,
+                    origin_session: b.origin_session,
+                    origin_agent: b.origin_agent
+                };
+
+                const isValid = verifyEntry(dataToVerify, b.signature, b.origin_session);
+                if (!isValid) {
+                    rejectedCount.invalid_signature++;
+                    console.error(`SECURITY: Rejected broadcast from ${b.sender} - invalid signature`);
+                    continue;
+                }
+
+                // Broadcast is valid
+                validBroadcasts.push(b);
+            } catch (err) {
+                rejectedCount.invalid_signature++;
+                console.error(`SECURITY: Rejected broadcast from ${b.sender} - signature verification error: ${err}`);
+                continue;
+            }
+        }
+
+        // Log rejection summary if any broadcasts were rejected
+        if (Object.values(rejectedCount).some(c => c > 0)) {
+            console.error(`SECURITY: Broadcast validation summary - Rejected: ${JSON.stringify(rejectedCount)}, Accepted: ${validBroadcasts.length}`);
+        }
+
+        if (validBroadcasts.length > 0) {
             // V4.4: Use context broker for trust-enforced assembly
             const sessionId = input.session_id || 'unknown';
             const broker = new ContextBroker();
 
-            // Register each broadcast as a context block
-            for (const b of broadcasts) {
+            // Register each valid broadcast as a context block
+            for (const b of validBroadcasts) {
                 // Validate sender matches safe pattern
                 const sender = SAFE_ID_PATTERN.test(b.sender) ? b.sender : '[invalid-sender]';
 
