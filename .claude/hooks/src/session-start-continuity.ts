@@ -1,6 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
+import {
+  createProvenance,
+  TrustLevel,
+  SourceType,
+} from './shared/provenance-types.js';
+import { ContextBroker } from './shared/context-broker.js';
 
 interface SessionStartInput {
   type?: 'startup' | 'resume' | 'clear' | 'compact';  // Legacy field
@@ -295,6 +301,7 @@ function getUnmarkedHandoffs(): UnmarkedHandoff[] {
 async function main() {
   const input: SessionStartInput = JSON.parse(await readStdin());
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const sessionId = input.session_id || 'unknown';
 
   // Support both 'source' (per docs) and 'type' (legacy) fields
   const sessionType = input.source || input.type;
@@ -518,22 +525,67 @@ async function main() {
     }
   }
 
-  // Output with proper format per Claude Code docs
-  const output: Record<string, unknown> = { result: 'continue' };
-
-  if (message) {
-    output.message = message;
-    output.systemMessage = message;  // Try both fields for visibility
-  }
-
+  // V4.5: Process context through broker before output
   if (additionalContext) {
+    const broker = new ContextBroker();
+
+    // Register the assembled continuity context
+    const provenance = createProvenance({
+      session_id: sessionId,
+      agent_id: null,
+      trust_level: TrustLevel.Medium, // Continuity files are project artifacts
+      source_type: SourceType.File,
+      content: additionalContext,
+    });
+
+    broker.register({
+      source_type: SourceType.Continuity,
+      content: additionalContext,
+      provenance,
+      metadata: {
+        session_type: sessionType,
+        used_handoff_ledger: usedHandoffLedger,
+      },
+    });
+
+    // Validate and assemble
+    const validation = broker.validate();
+    if (!validation.valid) {
+      console.error('SECURITY: Continuity context validation failed:', validation.errors);
+    }
+
+    const assembled = broker.assemble();
+
+    // Output with proper format per Claude Code docs
+    const output: any = { result: 'continue' };
+
+    if (message) {
+      output.message = message;
+      output.systemMessage = message;  // Try both fields for visibility
+    }
+
     output.hookSpecificOutput = {
       hookEventName: 'SessionStart',
-      additionalContext: additionalContext
+      additionalContext: assembled.formatted_output
     };
-  }
 
-  console.log(JSON.stringify(output));
+    // Attach security events if any
+    if (assembled.security_events.length > 0) {
+      output.securityEvents = assembled.security_events;
+    }
+
+    console.log(JSON.stringify(output));
+  } else {
+    // No additional context - simple output
+    const output: Record<string, unknown> = { result: 'continue' };
+
+    if (message) {
+      output.message = message;
+      output.systemMessage = message;
+    }
+
+    console.log(JSON.stringify(output));
+  }
 }
 
 async function readStdin(): Promise<string> {
