@@ -5,7 +5,7 @@
  * Returns errors as system reminder so Claude can fix before moving on.
  */
 
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -84,77 +84,82 @@ async function main() {
       return;
     }
 
-    // Run the check script
-    try {
-      const result = execSync(
-        `python3 "${scriptPath}" --file "${filePath}" --json`,
-        {
-          timeout: 35000,
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'pipe']
-        }
-      );
+    // Run the check script using spawnSync to avoid shell injection
+    const spawnResult = spawnSync('python3', [scriptPath, '--file', filePath, '--json'], {
+      timeout: 35000,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
 
-      const checkResult = JSON.parse(result);
-
-      if (checkResult.has_errors) {
-        // Format errors for system reminder
-        const errorLines: string[] = [];
-        errorLines.push(`⚠️ TypeScript Pre-flight Check: ${checkResult.summary}`);
-        errorLines.push('');
-
-        if (checkResult.tsc_errors?.length > 0) {
-          errorLines.push('**Type Errors:**');
-          for (const err of checkResult.tsc_errors.slice(0, 5)) {
-            errorLines.push(`  ${err}`);
-          }
-        }
-
-        if (checkResult.qlty_errors?.length > 0) {
-          errorLines.push('**Lint Issues:**');
-          for (const err of checkResult.qlty_errors.slice(0, 5)) {
-            errorLines.push(`  ${err}`);
-          }
-        }
-
-        errorLines.push('');
-        errorLines.push('Fix these errors before proceeding.');
-
-        // Use decision: block with reason to make message visible to Claude
-        // Since this is PostToolUse, edit already happened - "block" just shows the error
-        console.log(JSON.stringify({
-          decision: 'block',
-          reason: errorLines.join('\n')
-        }));
-        return;
-      }
-
-      // No errors - continue silently
+    // Handle spawn errors (e.g., python3 not found)
+    if (spawnResult.error) {
       console.log(JSON.stringify({}));
-
-    } catch (checkError: unknown) {
-      // Check script failed - extract stderr if available
-      if (checkError && typeof checkError === 'object' && 'status' in checkError) {
-        // Non-zero exit means errors found, try to parse stdout
-        const execError = checkError as { stdout?: string; stderr?: string };
-        if (execError.stdout) {
-          try {
-            const checkResult = JSON.parse(execError.stdout);
-            if (checkResult.has_errors) {
-              console.log(JSON.stringify({
-                decision: 'block',
-                reason: `⚠️ TypeScript Pre-flight: ${checkResult.summary}\n\nFix before proceeding.`
-              }));
-              return;
-            }
-          } catch {
-            // Couldn't parse, continue
-          }
-        }
-      }
-      // Other error, continue silently
-      console.log(JSON.stringify({}));
+      return;
     }
+
+    const result = spawnResult.stdout as string;
+
+    // Handle non-zero exit (script found errors)
+    if (spawnResult.status !== 0) {
+      try {
+        const checkResult = JSON.parse(result);
+        if (checkResult.has_errors) {
+          console.log(JSON.stringify({
+            decision: 'block',
+            reason: `⚠️ TypeScript Pre-flight: ${checkResult.summary}\n\nFix before proceeding.`
+          }));
+          return;
+        }
+      } catch {
+        // Couldn't parse, continue silently
+      }
+      console.log(JSON.stringify({}));
+      return;
+    }
+
+    // Parse successful result
+    let checkResult;
+    try {
+      checkResult = JSON.parse(result);
+    } catch {
+      console.log(JSON.stringify({}));
+      return;
+    }
+
+    if (checkResult.has_errors) {
+      // Format errors for system reminder
+      const errorLines: string[] = [];
+      errorLines.push(`⚠️ TypeScript Pre-flight Check: ${checkResult.summary}`);
+      errorLines.push('');
+
+      if (checkResult.tsc_errors?.length > 0) {
+        errorLines.push('**Type Errors:**');
+        for (const err of checkResult.tsc_errors.slice(0, 5)) {
+          errorLines.push(`  ${err}`);
+        }
+      }
+
+      if (checkResult.qlty_errors?.length > 0) {
+        errorLines.push('**Lint Issues:**');
+        for (const err of checkResult.qlty_errors.slice(0, 5)) {
+          errorLines.push(`  ${err}`);
+        }
+      }
+
+      errorLines.push('');
+      errorLines.push('Fix these errors before proceeding.');
+
+      // Use decision: block with reason to make message visible to Claude
+      // Since this is PostToolUse, edit already happened - "block" just shows the error
+      console.log(JSON.stringify({
+        decision: 'block',
+        reason: errorLines.join('\n')
+      }));
+      return;
+    }
+
+    // No errors - continue silently
+    console.log(JSON.stringify({}))
 
   } catch (error) {
     // Parse error or other issue - don't block

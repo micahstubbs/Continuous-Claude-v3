@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 
 interface SessionStartInput {
   type?: 'startup' | 'resume' | 'clear' | 'compact';  // Legacy field
@@ -267,11 +267,18 @@ function getUnmarkedHandoffs(): UnmarkedHandoff[] {
       return [];
     }
 
-    const result = execSync(
-      `sqlite3 "${dbPath}" "SELECT id, session_name, task_number, task_summary FROM handoffs WHERE outcome = 'UNKNOWN' ORDER BY indexed_at DESC LIMIT 5"`,
-      { encoding: 'utf-8', timeout: 3000 }
-    );
+    // Use spawnSync with argument array to avoid shell injection
+    const sqlQuery = "SELECT id, session_name, task_number, task_summary FROM handoffs WHERE outcome = 'UNKNOWN' ORDER BY indexed_at DESC LIMIT 5";
+    const spawnResult = spawnSync('sqlite3', [dbPath, sqlQuery], {
+      encoding: 'utf-8',
+      timeout: 3000
+    });
 
+    if (spawnResult.error || spawnResult.status !== 0) {
+      return [];
+    }
+
+    const result = spawnResult.stdout as string;
     if (!result.trim()) {
       return [];
     }

@@ -5,14 +5,38 @@
  * - Code execution via !!js/function and similar tags
  * - Prototype pollution via __proto__, constructor, prototype
  * - Prompt injection in parsed content
+ * - Resource exhaustion via large inputs
  *
  * Uses regex-based parsing for simple YAML structures instead of full
  * YAML parser to avoid deserialization vulnerabilities entirely.
  *
- * For complex YAML, use JSON as an alternative (inherently safer).
+ * RECOMMENDATION: Use JSON (parseJsonSecure) for untrusted content.
+ * YAML is inherently more dangerous due to its tag system.
  */
 
 import { containsPromptInjection, detectPromptInjection } from './security-utils.js';
+
+// =============================================================================
+// Security Limits
+// =============================================================================
+
+/**
+ * Maximum content size (100KB default).
+ * Prevents memory exhaustion from large YAML files.
+ */
+export const MAX_YAML_SIZE = 100 * 1024;
+
+/**
+ * Maximum number of keys allowed.
+ * Prevents object size explosion attacks.
+ */
+export const MAX_KEY_COUNT = 100;
+
+/**
+ * Maximum line count.
+ * Prevents parsing performance attacks.
+ */
+export const MAX_LINE_COUNT = 1000;
 
 // =============================================================================
 // Types
@@ -40,16 +64,38 @@ export interface HandoffData {
 
 /**
  * YAML tags that can execute code or cause security issues.
+ * Extended list based on security research.
  */
 const DANGEROUS_YAML_TAGS = [
+  // JavaScript
   /!!js\/function/gi,
   /!!js\/regexp/gi,
   /!!js\/undefined/gi,
+  /!<tag:yaml.org,2002:js\/function>/gi,
+
+  // Python
   /!!python\/object/gi,
   /!!python\/name/gi,
+  /!!python\/module/gi,
+  /!!python\/object\/apply/gi,
+  /!!python\/object\/new/gi,
+
+  // Ruby
   /!!ruby\/object/gi,
+  /!!ruby\/hash/gi,
+  /!!ruby\/sym/gi,
+  /!ruby\/object:Gem::Installer/gi,
+  /!ruby\/object:Gem::Requirement/gi,
+
+  // Perl
   /!!perl\/code/gi,
-  /!<tag:yaml.org,2002:js\/function>/gi,
+  /!!perl\/glob/gi,
+
+  // PHP
+  /!php\/object/gi,
+
+  // Any custom tag that could be dangerous
+  /!<[^>]*>/g,  // Generic custom tags
 ];
 
 /**
@@ -136,6 +182,15 @@ export function validateYamlSecurity(content: string): {
 export function parseSimpleYaml(content: string): ParseResult<Record<string, unknown>> {
   const warnings: string[] = [];
 
+  // Size limit check
+  if (content.length > MAX_YAML_SIZE) {
+    return {
+      success: false,
+      error: `YAML content exceeds maximum size (${MAX_YAML_SIZE} bytes)`,
+      warnings,
+    };
+  }
+
   // Security check first
   const securityCheck = validateYamlSecurity(content);
   if (!securityCheck.safe) {
@@ -149,6 +204,17 @@ export function parseSimpleYaml(content: string): ParseResult<Record<string, unk
   try {
     const result: Record<string, unknown> = {};
     const lines = content.split('\n');
+
+    // Line count limit
+    if (lines.length > MAX_LINE_COUNT) {
+      return {
+        success: false,
+        error: `YAML exceeds maximum line count (${MAX_LINE_COUNT})`,
+        warnings,
+      };
+    }
+
+    let keyCount = 0;
     let currentKey: string | null = null;
     let currentArray: string[] | null = null;
 
@@ -178,6 +244,16 @@ export function parseSimpleYaml(content: string): ParseResult<Record<string, unk
         }
 
         const [, key, value] = kvMatch;
+
+        // Key count limit
+        keyCount++;
+        if (keyCount > MAX_KEY_COUNT) {
+          return {
+            success: false,
+            error: `YAML exceeds maximum key count (${MAX_KEY_COUNT})`,
+            warnings,
+          };
+        }
 
         // Check for dangerous keys
         if (['__proto__', 'constructor', 'prototype'].includes(key)) {

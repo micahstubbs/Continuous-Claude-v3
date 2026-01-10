@@ -6,13 +6,62 @@
  * - DoS attacks via automated prompt flooding
  * - Accidental infinite loops in hook chains
  *
- * Uses in-memory token bucket algorithm (no external dependencies).
+ * Uses in-memory token bucket algorithm with optional SQLite persistence.
  * Limits are per-session to allow concurrent legitimate users.
+ *
+ * Security features:
+ * - Session ID validation (UUID format)
+ * - Optional persistent storage to survive restarts
  */
 
 import { freemem, totalmem, loadavg } from 'os';
-import { appendFileSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { spawnSync } from 'child_process';
+
+// =============================================================================
+// Session ID Validation
+// =============================================================================
+
+/**
+ * Valid session ID pattern: UUID v4 format or hex string.
+ * Claude Code session IDs are typically UUIDs.
+ */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HEX_ID_PATTERN = /^[0-9a-f]{32,64}$/i;
+
+/**
+ * Validates that a session ID is in expected format.
+ * Prevents injection attacks via session ID spoofing.
+ *
+ * Valid formats:
+ * - UUID v4: 550e8400-e29b-41d4-a716-446655440000
+ * - Hex string: 550e8400e29b41d4a716446655440000 (32-64 chars)
+ */
+export function isValidSessionId(sessionId: string): boolean {
+    if (!sessionId || typeof sessionId !== 'string') {
+        return false;
+    }
+
+    // Length check (prevent memory exhaustion)
+    if (sessionId.length > 100) {
+        return false;
+    }
+
+    // Must match UUID or hex pattern
+    return UUID_PATTERN.test(sessionId) || HEX_ID_PATTERN.test(sessionId);
+}
+
+/**
+ * Normalizes session ID to a consistent format.
+ * Removes hyphens and lowercases for consistent key lookup.
+ */
+export function normalizeSessionId(sessionId: string): string {
+    if (!isValidSessionId(sessionId)) {
+        throw new Error('Invalid session ID format');
+    }
+    return sessionId.replace(/-/g, '').toLowerCase();
+}
 
 // =============================================================================
 // Types
@@ -290,15 +339,31 @@ export function logRateLimitEvent(
 
 /**
  * Check if Python execution is allowed for a session.
+ * Validates session ID format before checking rate limit.
  */
 export function canExecutePython(sessionId: string, projectDir?: string): boolean {
-  const result = canExecute(pythonExecLimiter, sessionId, true);
+  // Validate session ID format to prevent spoofing/injection
+  if (!isValidSessionId(sessionId)) {
+    if (projectDir) {
+      logRateLimitEvent(projectDir, {
+        type: 'blocked',
+        limiter: 'python',
+        key: 'invalid-session',
+        reason: 'Invalid session ID format',
+      });
+    }
+    return false;
+  }
+
+  // Normalize session ID for consistent key lookup
+  const normalizedId = normalizeSessionId(sessionId);
+  const result = canExecute(pythonExecLimiter, normalizedId, true);
 
   if (!result.allowed && projectDir) {
     logRateLimitEvent(projectDir, {
       type: 'blocked',
       limiter: 'python',
-      key: sessionId,
+      key: normalizedId,
       reason: result.reason,
     });
   }
@@ -308,15 +373,31 @@ export function canExecutePython(sessionId: string, projectDir?: string): boolea
 
 /**
  * Check if hook execution is allowed for a session.
+ * Validates session ID format before checking rate limit.
  */
 export function canExecuteHook(sessionId: string, projectDir?: string): boolean {
-  const result = canExecute(hookExecLimiter, sessionId, false);
+  // Validate session ID format to prevent spoofing/injection
+  if (!isValidSessionId(sessionId)) {
+    if (projectDir) {
+      logRateLimitEvent(projectDir, {
+        type: 'blocked',
+        limiter: 'hook',
+        key: 'invalid-session',
+        reason: 'Invalid session ID format',
+      });
+    }
+    return false;
+  }
+
+  // Normalize session ID for consistent key lookup
+  const normalizedId = normalizeSessionId(sessionId);
+  const result = canExecute(hookExecLimiter, normalizedId, false);
 
   if (!result.allowed && projectDir) {
     logRateLimitEvent(projectDir, {
       type: 'blocked',
       limiter: 'hook',
-      key: sessionId,
+      key: normalizedId,
       reason: result.reason,
     });
   }
@@ -357,6 +438,10 @@ export function createRateLimiter(config: RateLimitConfig): RateLimiter {
 // =============================================================================
 
 export default {
+  // Session ID validation
+  isValidSessionId,
+  normalizeSessionId,
+
   // Pre-configured limiters
   pythonExecLimiter,
   hookExecLimiter,

@@ -2,6 +2,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
+import { containsPromptInjection, sanitizeContent } from './shared/security-utils';
 
 interface PreToolUseInput {
     session_id: string;
@@ -17,6 +18,31 @@ interface HookOutput {
 // Safe ID pattern: alphanumeric with hyphens/underscores, 1-64 chars
 // Blocks shell metacharacters, newlines, quotes, etc.
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+// Valid broadcast types (whitelist)
+const VALID_BROADCAST_TYPES = ['started', 'done', 'progress', 'error', 'handoff', 'claim'];
+
+/**
+ * Sanitizes a broadcast payload to prevent injection attacks.
+ * Returns a sanitized version of the payload or a safe placeholder.
+ */
+function sanitizeBroadcastPayload(payload: unknown): string {
+    const jsonStr = JSON.stringify(payload);
+
+    // Check for prompt injection patterns
+    if (containsPromptInjection(jsonStr)) {
+        // Log security event (but don't block - just sanitize)
+        console.error(`SECURITY: Broadcast payload contained suspicious content`);
+        return JSON.stringify({ sanitized: true, reason: 'potential_injection' });
+    }
+
+    // Limit payload size to prevent context flooding
+    if (jsonStr.length > 1000) {
+        return JSON.stringify({ truncated: true, preview: jsonStr.slice(0, 200) });
+    }
+
+    return jsonStr;
+}
 
 async function main() {
     const input = readFileSync(0, 'utf-8');
@@ -106,8 +132,19 @@ print(json.dumps(broadcasts))
         if (broadcasts.length > 0) {
             let contextMessage = '\n--- SWARM BROADCASTS ---\n';
             for (const b of broadcasts) {
-                contextMessage += `[${b.type.toUpperCase()}] from ${b.sender}:\n`;
-                contextMessage += `  ${JSON.stringify(b.payload)}\n`;
+                // Validate sender matches safe pattern
+                const sender = SAFE_ID_PATTERN.test(b.sender) ? b.sender : '[invalid-sender]';
+
+                // Validate type against whitelist
+                const type = VALID_BROADCAST_TYPES.includes(b.type?.toLowerCase())
+                    ? b.type.toUpperCase()
+                    : 'UNKNOWN';
+
+                // Sanitize payload to prevent injection
+                const safePayload = sanitizeBroadcastPayload(b.payload);
+
+                contextMessage += `[${type}] from ${sender}:\n`;
+                contextMessage += `  ${safePayload}\n`;
             }
             contextMessage += '------------------------\n';
 

@@ -30,6 +30,7 @@ USAGE:
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -43,7 +44,12 @@ OUTPUT_FILE = CACHE_DIR / "async_result.md"
 
 
 def run_cmd(cmd: str) -> tuple[int, str]:
-    """Run shell command and return exit code + output."""
+    """Run shell command and return exit code + output.
+
+    SECURITY NOTE: shell=True is intentionally kept because tmux commands require
+    shell features (redirection with >, 2>&1). User inputs MUST be escaped via
+    shlex.quote() before being passed to this function. See start_async() caller.
+    """
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return result.returncode, result.stdout + result.stderr
 
@@ -157,14 +163,17 @@ def main():
 
     if args.action == "start":
         if args.command:
-            # Raw command mode
-            cmd = f"rp-cli -e '{args.command}'"
+            # Raw command mode - escape user input to prevent shell injection
+            safe_command = shlex.quote(args.command)
+            cmd = f"rp-cli -e {safe_command}"
         elif args.task:
-            # Context builder mode
+            # Context builder mode - escape user inputs to prevent shell injection
+            safe_task = shlex.quote(args.task)
             if args.workspace:
-                cmd = f'rp-cli -e \'workspace switch "{args.workspace}" && builder "{args.task}"\''
+                safe_workspace = shlex.quote(args.workspace)
+                cmd = f'rp-cli -e \'workspace switch {safe_workspace} && builder {safe_task}\''
             else:
-                cmd = f"rp-cli -e 'builder \"{args.task}\"'"
+                cmd = f"rp-cli -e 'builder {safe_task}'"
         else:
             print("Error: --task or --command required for start action")
             sys.exit(1)

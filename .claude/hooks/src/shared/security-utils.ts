@@ -68,6 +68,46 @@ export function isValidJson(str: string, maxSize: number = 1_000_000): boolean {
 // =============================================================================
 
 /**
+ * Normalizes text for security scanning by:
+ * 1. Unicode NFKC normalization (converts fullwidth, compatibility characters)
+ * 2. Common homoglyph replacement (Cyrillic lookalikes, etc.)
+ * 3. Stripping zero-width characters that could hide content
+ *
+ * This prevents evasion via Unicode tricks like:
+ * - "ｉｇｎｏｒｅ" (fullwidth) -> "ignore"
+ * - "іgnore" (Cyrillic і) -> "ignore"
+ * - "ig\u200Bnore" (zero-width space) -> "ignore"
+ */
+function normalizeForSecurityScan(content: string): string {
+    let normalized = content;
+
+    // 1. NFKC normalization (fullwidth -> ASCII, compatibility chars)
+    normalized = normalized.normalize('NFKC');
+
+    // 2. Remove zero-width and invisible characters that could hide content
+    // U+200B Zero Width Space, U+200C Zero Width Non-Joiner,
+    // U+200D Zero Width Joiner, U+FEFF BOM, U+00AD Soft Hyphen
+    normalized = normalized.replace(/[\u200B-\u200D\uFEFF\u00AD\u2060\u180E]/g, '');
+
+    // 3. Common Cyrillic/Greek homoglyphs -> ASCII
+    // These are often used to bypass text filters
+    const homoglyphMap: Record<string, string> = {
+        'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'х': 'x', // Cyrillic
+        'і': 'i', 'ј': 'j', 'ѕ': 's', // More Cyrillic
+        'Α': 'A', 'Β': 'B', 'Ε': 'E', 'Η': 'H', 'Ι': 'I', 'Κ': 'K', // Greek capitals
+        'Μ': 'M', 'Ν': 'N', 'Ο': 'O', 'Ρ': 'P', 'Τ': 'T', 'Χ': 'X', 'Υ': 'Y', 'Ζ': 'Z',
+        'ο': 'o', 'ν': 'v', // Greek lowercase
+        'ⅰ': 'i', 'ⅱ': 'ii', 'ⅲ': 'iii', 'ⅳ': 'iv', 'ⅴ': 'v', // Roman numerals
+    };
+
+    for (const [homoglyph, ascii] of Object.entries(homoglyphMap)) {
+        normalized = normalized.split(homoglyph).join(ascii);
+    }
+
+    return normalized;
+}
+
+/**
  * Patterns that indicate potential prompt injection attempts.
  * These are heuristic-based and may have false positives.
  */
@@ -106,12 +146,20 @@ const INJECTION_PATTERNS = [
 /**
  * Scans content for potential prompt injection patterns.
  * Returns array of detected patterns (empty if none found).
+ *
+ * Content is normalized before scanning to detect Unicode-based evasion:
+ * - Fullwidth characters (ｉｇｎｏｒｅ -> ignore)
+ * - Cyrillic/Greek homoglyphs (іgnore -> ignore)
+ * - Zero-width spaces hiding content
  */
 export function detectPromptInjection(content: string): string[] {
     const detected: string[] = [];
 
+    // Normalize to catch Unicode-based evasion attempts
+    const normalized = normalizeForSecurityScan(content);
+
     for (const pattern of INJECTION_PATTERNS) {
-        if (pattern.test(content)) {
+        if (pattern.test(normalized)) {
             detected.push(pattern.source);
         }
     }
@@ -122,9 +170,13 @@ export function detectPromptInjection(content: string): string[] {
 /**
  * Checks if content appears to contain prompt injection.
  * Use this for quick boolean checks.
+ *
+ * Content is normalized before scanning to detect Unicode-based evasion.
  */
 export function containsPromptInjection(content: string): boolean {
-    return INJECTION_PATTERNS.some(pattern => pattern.test(content));
+    // Normalize to catch Unicode-based evasion attempts
+    const normalized = normalizeForSecurityScan(content);
+    return INJECTION_PATTERNS.some(pattern => pattern.test(normalized));
 }
 
 /**

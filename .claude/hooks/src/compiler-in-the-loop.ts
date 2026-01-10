@@ -9,7 +9,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { dirname, join } from 'path';
 
 // LMStudio endpoint for Goedel-Prover-V2-8B
@@ -73,21 +73,36 @@ function runLeanCompiler(filePath: string, cwd: string): { success: boolean; out
   const elanBin = join(home, '.elan', 'bin');
   const pathWithElan = `${elanBin}:${process.env.PATH}`;
 
-  try {
-    // Try lake build first (for project files), or lean directly for standalone files
-    const hasLakefile = existsSync(join(cwd, 'lakefile.lean')) || existsSync(join(cwd, 'lakefile.toml'));
-    const cmd = hasLakefile
-      ? `cd "${cwd}" && lake build 2>&1`
-      : `lean "${filePath}" 2>&1`;
+  // Try lake build first (for project files), or lean directly for standalone files
+  const hasLakefile = existsSync(join(cwd, 'lakefile.lean')) || existsSync(join(cwd, 'lakefile.toml'));
 
-    const output = execSync(cmd, {
-      encoding: 'utf-8',
-      timeout: 60000,
-      maxBuffer: 1024 * 1024,
-      env: { ...process.env, PATH: pathWithElan }
-    });
+  // Use spawnSync with argument arrays to avoid shell injection
+  const spawnResult = hasLakefile
+    ? spawnSync('lake', ['build'], {
+        cwd: cwd,
+        encoding: 'utf-8',
+        timeout: 60000,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, PATH: pathWithElan }
+      })
+    : spawnSync('lean', [filePath], {
+        encoding: 'utf-8',
+        timeout: 60000,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, PATH: pathWithElan }
+      });
 
-    // Check for 'sorry' in the output or file
+  // Handle spawn errors (e.g., command not found)
+  if (spawnResult.error) {
+    return { success: false, output: spawnResult.error.message, sorries: [] };
+  }
+
+  // Combine stdout and stderr (equivalent to 2>&1)
+  const output = (spawnResult.stdout || '') + (spawnResult.stderr || '');
+  const success = spawnResult.status === 0;
+
+  if (success) {
+    // Check for 'sorry' in the file
     const sorries: string[] = [];
     const fileContent = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : '';
     const sorryMatches = fileContent.match(/sorry/g);
@@ -100,12 +115,10 @@ function runLeanCompiler(filePath: string, cwd: string): { success: boolean; out
         }
       });
     }
-
     return { success: true, output, sorries };
-  } catch (error: any) {
-    const output = error.stdout || error.stderr || error.message;
-    return { success: false, output, sorries: [] };
   }
+
+  return { success: false, output, sorries: [] };
 }
 
 function extractSorries(filePath: string): string[] {
