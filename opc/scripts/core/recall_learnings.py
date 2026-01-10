@@ -188,6 +188,9 @@ async def search_learnings_sqlite(query: str, k: int = 5) -> list[dict[str, Any]
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    # Set busy timeout and WAL mode for better concurrent access
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
 
     try:
         cursor = conn.execute(

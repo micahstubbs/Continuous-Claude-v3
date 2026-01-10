@@ -144,6 +144,9 @@ def sqlite_ensure_table():
     db_path = get_sqlite_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
+    # Set busy timeout and WAL mode for better concurrent access
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
@@ -169,6 +172,9 @@ def sqlite_get_stale_sessions() -> list:
     if not db_path.exists():
         return []
     conn = sqlite3.connect(db_path)
+    # Set busy timeout and WAL mode for better concurrent access
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
     threshold = (datetime.now() - timedelta(seconds=STALE_THRESHOLD)).isoformat()
     cursor = conn.execute("""
         SELECT id, project FROM sessions
@@ -184,6 +190,9 @@ def sqlite_mark_extracted(session_id: str):
     """Mark session as extracted in SQLite."""
     db_path = get_sqlite_path()
     conn = sqlite3.connect(db_path)
+    # Set busy timeout and WAL mode for better concurrent access
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("""
         UPDATE sessions SET memory_extracted_at = ? WHERE id = ?
     """, (datetime.now().isoformat(), session_id))
