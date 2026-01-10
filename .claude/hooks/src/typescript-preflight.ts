@@ -8,6 +8,7 @@
 import { spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { initializeBinaryPaths, getBinaryPath, getSanitizedEnv } from './shared/binary-resolver.js';
 
 interface PostToolUseInput {
   tool_name: string;
@@ -41,6 +42,9 @@ function readStdin(): Promise<string> {
 
 async function main() {
   try {
+    // Initialize binary paths for security (V2 - Round 2 audit)
+    initializeBinaryPaths();
+
     const stdinData = await readStdin();
     const input: PostToolUseInput = JSON.parse(stdinData);
 
@@ -84,11 +88,12 @@ async function main() {
       return;
     }
 
-    // Run the check script using spawnSync to avoid shell injection
-    const spawnResult = spawnSync('python3', [scriptPath, '--file', filePath, '--json'], {
+    // Run the check script using pinned binary path to prevent PATH hijack (V2 - Round 2 audit)
+    const spawnResult = spawnSync(getBinaryPath('python3'), [scriptPath, '--file', filePath, '--json'], {
       timeout: 35000,
       encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: getSanitizedEnv()
     });
 
     // Handle spawn errors (e.g., python3 not found)

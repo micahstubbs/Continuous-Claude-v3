@@ -16,6 +16,7 @@ import { writeFileSync, unlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { randomBytes } from 'crypto';
 import type { ValidationResult, PatternInferenceResult, PatternType } from './pattern-selector.js';
+import { getBinaryPath, getSanitizedEnv } from './binary-resolver.js';
 
 // Get project root
 const __filename = fileURLToPath(import.meta.url);
@@ -104,13 +105,14 @@ export function callValidateCompositionSecure(
         // SECURE: Use spawnSync with argument array
         // Expression passed as argument (safe after validation)
         const result = spawnSync(
-            'uv',
+            getBinaryPath('uv'),
             ['run', 'python', 'scripts/validate_composition.py', '--json', expr],
             {
                 cwd: PROJECT_DIR,
                 encoding: 'utf-8',
                 timeout: 10000,
                 stdio: ['pipe', 'pipe', 'pipe'],
+                env: getSanitizedEnv()
             }
         );
 
@@ -179,7 +181,7 @@ print(json.dumps(result.to_dict()))
             // SECURE: spawnSync with argument array
             // Prompt passed via stdin - cannot escape to shell
             const result = spawnSync(
-                'uv',
+                getBinaryPath('uv'),
                 ['run', 'python', wrapperPath],
                 {
                     cwd: PROJECT_DIR,
@@ -187,6 +189,7 @@ print(json.dumps(result.to_dict()))
                     timeout: 10000,
                     input: prompt,  // SECURE: passed via stdin
                     stdio: ['pipe', 'pipe', 'pipe'],
+                    env: getSanitizedEnv()
                 }
             );
 
@@ -261,13 +264,14 @@ print(json.dumps(result.to_dict()))
             // SECURE: spawnSync with arguments
             // Base64 string is safe - only alphanumeric chars
             const result = spawnSync(
-                'uv',
+                getBinaryPath('uv'),
                 ['run', 'python', wrapperPath, promptBase64],
                 {
                     cwd: PROJECT_DIR,
                     encoding: 'utf-8',
                     timeout: 10000,
                     stdio: ['pipe', 'pipe', 'pipe'],
+                    env: getSanitizedEnv()
                 }
             );
 
