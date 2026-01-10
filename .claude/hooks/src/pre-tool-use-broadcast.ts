@@ -10,6 +10,7 @@ import {
   SourceType,
   type ProvenanceMetadata
 } from './shared/provenance-types.js';
+import { ContextBroker } from './shared/context-broker.js';
 
 interface PreToolUseInput {
     session_id: string;
@@ -137,10 +138,11 @@ print(json.dumps(broadcasts))
         const broadcasts = JSON.parse(result.stdout.trim() || '[]');
 
         if (broadcasts.length > 0) {
-            // V3.4: Add provenance metadata to all broadcast messages
+            // V4.4: Use context broker for trust-enforced assembly
             const sessionId = input.session_id || 'unknown';
+            const broker = new ContextBroker();
 
-            let contextMessage = '\n--- SWARM BROADCASTS ---\n';
+            // Register each broadcast as a context block
             for (const b of broadcasts) {
                 // Validate sender matches safe pattern
                 const sender = SAFE_ID_PATTERN.test(b.sender) ? b.sender : '[invalid-sender]';
@@ -163,16 +165,45 @@ print(json.dumps(broadcasts))
                     // No signature available from query (V1.8 read path will validate)
                 });
 
-                const provenanceTag = formatProvenance(provenance, false);
-                contextMessage += `${provenanceTag} [${type}] from ${sender}:\n`;
-                contextMessage += `  ${safePayload}\n`;
-            }
-            contextMessage += '------------------------\n';
+                // Format broadcast with type and sender
+                const formattedContent = `[${type}] from ${sender}:\n  ${safePayload}`;
 
-            console.log(JSON.stringify({
+                broker.register({
+                    source_type: SourceType.Broadcast,
+                    content: formattedContent,
+                    provenance,
+                    metadata: {
+                        sender_agent: b.sender,
+                        broadcast_type: b.type,
+                        created_at: b.time,
+                    },
+                });
+            }
+
+            // Validate registered blocks
+            const validation = broker.validate();
+            if (!validation.valid) {
+                // Log validation errors - broadcasts may be poisoned
+                console.error('SECURITY: Broadcast validation failed:', validation.errors);
+            }
+
+            // Assemble context with trust markers
+            const assembled = broker.assemble();
+
+            // Build output with trust-aware context
+            const contextMessage = `\n--- SWARM BROADCASTS ---\n${assembled.formatted_output}------------------------\n`;
+
+            const output: any = {
                 result: 'continue',
                 message: contextMessage
-            }));
+            };
+
+            // Attach security events if any were logged
+            if (assembled.security_events.length > 0) {
+                output.securityEvents = assembled.security_events;
+            }
+
+            console.log(JSON.stringify(output));
         } else {
             console.log(JSON.stringify({ result: 'continue' }));
         }
