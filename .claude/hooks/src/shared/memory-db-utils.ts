@@ -11,17 +11,25 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { runPythonQuery } from './db-utils.js';
 import { generateSessionKey, signEntry } from './crypto-signing.js';
+import { enforceSecurePermissions } from './db-permissions.js';
 
 /**
  * Get the path to the memory database.
  *
  * Memory database is stored in user's home directory for global persistence.
  *
+ * V1.11: Enforces secure file permissions on database files.
+ *
  * @returns Absolute path to memory.db
  */
 export function getMemoryDbPath(): string {
   const home = process.env.HOME || process.env.USERPROFILE || '';
-  return join(home, '.claude', 'memory.db');
+  const dbPath = join(home, '.claude', 'memory.db');
+
+  // V1.11: Enforce secure permissions (0600) on database file
+  enforceSecurePermissions(dbPath);
+
+  return dbPath;
 }
 
 /**

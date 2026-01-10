@@ -16,6 +16,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import type { QueryResult } from './types.js';
 import { generateSessionKey, signEntry } from './crypto-signing.js';
+import { enforceSecurePermissions } from './db-permissions.js';
 
 // Re-export SAFE_ID_PATTERN and isValidId from pattern-router for convenience
 export { SAFE_ID_PATTERN, isValidId } from './pattern-router.js';
@@ -26,12 +27,19 @@ export { SAFE_ID_PATTERN, isValidId } from './pattern-router.js';
  * Uses CLAUDE_PROJECT_DIR environment variable if set,
  * otherwise falls back to process.cwd().
  *
+ * V1.11: Enforces secure file permissions on database files.
+ *
  * @returns Absolute path to coordination.db
  */
 export function getDbPath(): string {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  return join(projectDir, '.claude', 'cache',
+  const dbPath = join(projectDir, '.claude', 'cache',
     'agentica-coordination', 'coordination.db');
+
+  // V1.11: Enforce secure permissions (0600) on database file
+  enforceSecurePermissions(dbPath);
+
+  return dbPath;
 }
 
 /**

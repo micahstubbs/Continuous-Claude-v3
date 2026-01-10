@@ -11,17 +11,25 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { runPythonQuery } from './db-utils.js';
 import { generateSessionKey, signEntry } from './crypto-signing.js';
+import { enforceSecurePermissions } from './db-permissions.js';
 
 /**
  * Get the path to the sessions database.
  *
  * Sessions database is stored per-project for session tracking.
  *
+ * V1.11: Enforces secure file permissions on database files.
+ *
  * @returns Absolute path to sessions.db
  */
 export function getSessionsDbPath(): string {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  return join(projectDir, '.claude', 'cache', 'sessions.db');
+  const dbPath = join(projectDir, '.claude', 'cache', 'sessions.db');
+
+  // V1.11: Enforce secure permissions (0600) on database file
+  enforceSecurePermissions(dbPath);
+
+  return dbPath;
 }
 
 /**
