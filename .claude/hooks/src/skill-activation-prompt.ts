@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 
 // Import shared resource reader (Phase 4 module)
 import { readResourceState, ResourceState } from './shared/resource-reader.js';
+
+// SECURITY FIX: Import secure pattern inference to prevent command injection
+import { runPatternInferenceSecure } from './shared/secure-pattern-inference.js';
 
 // Import validation module for false-positive reduction
 import {
@@ -79,10 +81,14 @@ interface MatchedSkill {
 }
 
 /**
- * Run pattern inference using the Python module.
- * Returns null if inference fails or module not available.
+ * @deprecated VULNERABLE - DO NOT USE
+ * This function has a command injection vulnerability via triple-quote bypass.
+ * Use runPatternInferenceSecure from './shared/secure-pattern-inference.js' instead.
+ *
+ * SECURITY ISSUE: User prompt embedded in shell command with insufficient escaping.
+ * Exploit: Prompt containing ''' can break out and execute arbitrary code.
  */
-function runPatternInference(prompt: string, projectDir: string): PatternInference | null {
+function runPatternInference_VULNERABLE_DO_NOT_USE(prompt: string, projectDir: string): PatternInference | null {
     try {
         const scriptPath = join(projectDir, 'scripts', 'agentica_patterns', 'pattern_inference.py');
         if (!existsSync(scriptPath)) {
@@ -195,7 +201,8 @@ async function main() {
         const rules: SkillRules = JSON.parse(readFileSync(rulesPath, 'utf-8'));
 
         // CHANGE 1: Run pattern inference EARLY on all prompts
-        const patternInference = runPatternInference(data.prompt, projectDir);
+        // SECURITY FIX: Use secure version that prevents command injection
+        const patternInference = runPatternInferenceSecure(data.prompt, projectDir);
 
         const matchedSkills: MatchedSkill[] = [];
 

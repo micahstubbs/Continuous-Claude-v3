@@ -10,8 +10,11 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { queryDaemonSync, DaemonResponse } from './daemon-client.js';
+
+// SECURITY FIX: Import secure ripgrep function
+import { ripgrepFallbackSecure } from './shared/secure-ripgrep.js';
 
 interface GrepInput {
   pattern: string;
@@ -92,25 +95,12 @@ function tldrSearch(pattern: string, projectDir: string = '.'): TLDRSearchResult
 
 /**
  * Ripgrep fallback for when daemon is unavailable.
+ * SECURITY FIX: Now uses secure version that passes pattern via argument array
+ * instead of shell interpolation.
  */
 function ripgrepFallback(pattern: string, projectDir: string): TLDRSearchResult[] {
-  try {
-    const escaped = pattern.replace(/"/g, '\\"').replace(/\$/g, '\\$');
-    const result = execSync(
-      `rg "${escaped}" "${projectDir}" --type py --line-number --max-count 10 2>/dev/null`,
-      { encoding: 'utf-8', timeout: 3000 }
-    );
-    // Parse ripgrep output: file:line:content
-    return result.trim().split('\n').filter(l => l).slice(0, 10).map(line => {
-      const match = line.match(/^([^:]+):(\d+):(.*)$/);
-      if (match) {
-        return { file: match[1], line: parseInt(match[2], 10), content: match[3] };
-      }
-      return { file: line, line: 0, content: '' };
-    });
-  } catch {
-    return [];
-  }
+  // Delegate to secure implementation
+  return ripgrepFallbackSecure(pattern, projectDir);
 }
 
 /**

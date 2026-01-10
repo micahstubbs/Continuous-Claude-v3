@@ -3,12 +3,21 @@
  *
  * Subprocess wrappers to call Python validation and inference scripts.
  * Provides type-safe interface between TypeScript hooks and Python logic.
+ *
+ * SECURITY NOTE: Original functions had command injection vulnerabilities.
+ * Now re-exports secure versions from secure-python-bridge.ts
  */
 
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import type { ValidationResult, PatternInferenceResult, PatternType } from './pattern-selector.js';
+
+// SECURITY FIX: Re-export secure versions
+export {
+  callPatternInferenceSecure as callPatternInference,
+  callValidateCompositionSecure as callValidateComposition,
+} from './secure-python-bridge.js';
 
 // Get project root - from .claude/hooks/src/shared/ go up 4 levels
 const __filename = fileURLToPath(import.meta.url);

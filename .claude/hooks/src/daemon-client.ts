@@ -11,10 +11,13 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { join } from 'path';
 import * as net from 'net';
 import * as crypto from 'crypto';
+
+// SECURITY FIX: Import secure daemon query to prevent command injection
+import { queryDaemonSyncSecureNc } from './shared/secure-daemon-query.js';
 
 /** Query timeout in milliseconds (3 seconds) */
 const QUERY_TIMEOUT = 3000;
@@ -189,13 +192,15 @@ function isDaemonReachable(projectDir: string): boolean {
     }
 
     // Try a quick ping to verify daemon is alive (sync approach using nc)
+    // SECURITY FIX: Use spawnSync with stdin instead of shell interpolation
     try {
-      execSync(`echo '{"cmd":"ping"}' | nc -U "${connInfo.path}"`, {
+      const result = spawnSync('nc', ['-U', connInfo.path!], {
+        input: '{"cmd":"ping"}\n',
         encoding: 'utf-8',
         timeout: 500,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      return true;
+      return result.status === 0;
     } catch {
       // Connection failed - socket is stale, remove it
       try {
@@ -360,14 +365,18 @@ export function queryDaemon(query: DaemonQuery, projectDir: string): Promise<Dae
 }
 
 /**
- * Query the daemon synchronously using nc (netcat) or PowerShell (Windows).
- * Fallback for contexts where async is not available.
+ * @deprecated VULNERABLE - DO NOT USE
+ * This function has a command injection vulnerability via unescaped JSON in shell command.
+ * Use queryDaemonSyncSecure from './shared/secure-daemon-query.js' instead.
+ *
+ * SECURITY ISSUE: JSON input passed directly to shell via echo '${input}' | nc
+ * Exploit: Query containing shell metacharacters can execute arbitrary commands.
  *
  * @param query - Query to send to daemon
  * @param projectDir - Project directory path
  * @returns Daemon response
  */
-export function queryDaemonSync(query: DaemonQuery, projectDir: string): DaemonResponse {
+export function queryDaemonSync_VULNERABLE_DO_NOT_USE(query: DaemonQuery, projectDir: string): DaemonResponse {
   // Check if indexing - return early with indexing flag
   if (isIndexing(projectDir)) {
     return {
@@ -750,4 +759,41 @@ export async function importersDaemon(
   language: string = 'python'
 ): Promise<any> {
   return queryDaemon({ cmd: 'importers', module, language }, projectDir);
+}
+
+/**
+ * SECURE: Query the daemon synchronously without command injection risk.
+ * Uses native netcat with stdin input instead of shell interpolation.
+ *
+ * @param query - Query to send to daemon
+ * @param projectDir - Project directory path
+ * @returns Daemon response
+ */
+export function queryDaemonSync(query: DaemonQuery, projectDir: string): DaemonResponse {
+  // Check if indexing - return early with indexing flag
+  if (isIndexing(projectDir)) {
+    return {
+      indexing: true,
+      status: 'indexing',
+      message: 'Daemon is still indexing, results may be incomplete',
+    };
+  }
+
+  const connInfo = getConnectionInfo(projectDir);
+
+  // Check if daemon is reachable
+  if (!isDaemonReachable(projectDir)) {
+    // Try to start daemon
+    if (!tryStartDaemon(projectDir)) {
+      return { status: 'unavailable', error: 'Daemon not running and could not start' };
+    }
+  }
+
+  // SECURITY FIX: Use secure query function that passes data via stdin
+  return queryDaemonSyncSecureNc(query, {
+    type: connInfo.type as 'unix' | 'tcp',
+    path: connInfo.path,
+    host: connInfo.host,
+    port: connInfo.port,
+  });
 }
