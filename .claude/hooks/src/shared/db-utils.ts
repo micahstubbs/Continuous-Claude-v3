@@ -15,6 +15,7 @@ import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import type { QueryResult } from './types.js';
+import { generateSessionKey, signEntry } from './crypto-signing.js';
 
 // Re-export SAFE_ID_PATTERN and isValidId from pattern-router for convenience
 export { SAFE_ID_PATTERN, isValidId } from './pattern-router.js';
@@ -115,6 +116,67 @@ export function registerAgent(
   // Otherwise it's from the CLI (Task tool)
   const source = process.env.AGENTICA_SERVER ? 'agentica' : 'cli';
 
+  // V1.5: Generate session key if not exists and sign the agent entry
+  try {
+    // Generate or retrieve session key (idempotent)
+    generateSessionKey(sessionId);
+
+    // Build data to sign (matches what will be stored, minus signature)
+    const now_ts = Math.floor(Date.now() / 1000);
+    const origin_session = sessionId;
+    const origin_agent = process.env.AGENT_ID || null;
+
+    const dataToSign = {
+      id: agentId,
+      session_id: sessionId,
+      pattern: pattern,
+      pid: pid,
+      origin_session: origin_session,
+      origin_agent: origin_agent,
+      created_at_ts: now_ts,
+      source: source,
+    };
+
+    // Sign the entry
+    const signature = signEntry(dataToSign, sessionId);
+
+    // Pass signature to Python script
+    return registerAgentWithSignature(
+      agentId,
+      sessionId,
+      pattern,
+      pid,
+      source,
+      origin_session,
+      origin_agent,
+      now_ts,
+      signature,
+      dbPath
+    );
+  } catch (err) {
+    return {
+      success: false,
+      error: `Signing failed: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+}
+
+/**
+ * Internal: Register agent with pre-computed signature
+ */
+function registerAgentWithSignature(
+  agentId: string,
+  sessionId: string,
+  pattern: string | null,
+  pid: number | null,
+  source: string,
+  origin_session: string,
+  origin_agent: string | null,
+  created_at_ts: number,
+  signature: string,
+  dbPath: string
+): { success: boolean; error?: string } {
+
   const pythonScript = `
 import sqlite3
 import sys
@@ -128,6 +190,10 @@ session_id = sys.argv[3]
 pattern = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != 'null' else None
 pid = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] != 'null' else None
 source = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] != 'null' else None
+origin_session = sys.argv[7] if len(sys.argv) > 7 else session_id
+origin_agent = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] != 'null' else None
+created_at_ts = int(sys.argv[9]) if len(sys.argv) > 9 else None
+signature = sys.argv[10] if len(sys.argv) > 10 and sys.argv[10] != 'null' else None
 
 try:
     # Ensure directory exists
@@ -176,23 +242,20 @@ try:
         conn.execute("ALTER TABLE agents ADD COLUMN signature TEXT")
 
     now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-    now_ts = int(datetime.now(timezone.utc).timestamp())
+    # Use provided timestamp if given, otherwise compute
+    if created_at_ts is None:
+        created_at_ts = int(datetime.now(timezone.utc).timestamp())
     ppid = os.getppid() if pid else None
-
-    # Provenance: session that spawned the agent
-    origin_session = session_id
-    # origin_agent would be the parent agent ID if available, otherwise None
-    origin_agent = os.environ.get('AGENT_ID')
 
     conn.execute(
         """
         INSERT OR REPLACE INTO agents
         (id, session_id, pattern, pid, ppid, spawned_at, status, source,
-         origin_session, origin_agent, created_at_ts)
-        VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
+         origin_session, origin_agent, created_at_ts, signature)
+        VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)
         """,
         (agent_id, session_id, pattern, pid, ppid, now, source,
-         origin_session, origin_agent, now_ts)
+         origin_session, origin_agent, created_at_ts, signature)
     )
     conn.commit()
     conn.close()
@@ -208,7 +271,11 @@ except Exception as e:
     sessionId,
     pattern || 'null',
     pid !== null ? String(pid) : 'null',
-    source
+    source,
+    origin_session,
+    origin_agent || 'null',
+    String(created_at_ts),
+    signature
   ];
 
   const result = runPythonQuery(pythonScript, args);
@@ -304,6 +371,167 @@ except Exception as e:
   }
 
   return { success: true };
+}
+
+/**
+ * Record a broadcast message with provenance and signature.
+ *
+ * V1.5: Adds signature and provenance fields to broadcasts.
+ *
+ * @param swarmId - Swarm identifier
+ * @param senderAgent - Agent sending the broadcast
+ * @param broadcastType - Type of broadcast (e.g., 'started', 'done', 'progress')
+ * @param payload - Broadcast payload (will be JSON stringified)
+ * @param sessionId - Session for signing
+ * @returns Object with success boolean and any error message
+ */
+export function recordBroadcast(
+  swarmId: string,
+  senderAgent: string,
+  broadcastType: string,
+  payload: unknown,
+  sessionId: string
+): { success: boolean; error?: string; broadcastId?: string } {
+  const dbPath = getDbPath();
+
+  try {
+    // Generate session key if not exists
+    generateSessionKey(sessionId);
+
+    // Build data to sign
+    const now_ts = Math.floor(Date.now() / 1000);
+    const origin_session = sessionId;
+    const origin_agent = process.env.AGENT_ID || null;
+    const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
+
+    // Generate broadcast ID
+    const broadcastId = generateBroadcastId();
+
+    const dataToSign = {
+      id: broadcastId,
+      swarm_id: swarmId,
+      sender_agent: senderAgent,
+      broadcast_type: broadcastType,
+      payload: payloadStr,
+      origin_session: origin_session,
+      origin_agent: origin_agent,
+      created_at_ts: now_ts,
+    };
+
+    // Sign the entry
+    const signature = signEntry(dataToSign, sessionId);
+
+    // Insert into database
+    const pythonScript = `
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+db_path = sys.argv[1]
+broadcast_id = sys.argv[2]
+swarm_id = sys.argv[3]
+sender_agent = sys.argv[4]
+broadcast_type = sys.argv[5]
+payload = sys.argv[6]
+origin_session = sys.argv[7]
+origin_agent = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] != 'null' else None
+created_at_ts = int(sys.argv[9]) if len(sys.argv) > 9 else None
+signature = sys.argv[10] if len(sys.argv) > 10 and sys.argv[10] != 'null' else None
+
+try:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
+
+    # Create broadcasts table if not exists (from V1.1 migration)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS broadcasts (
+            id TEXT PRIMARY KEY,
+            swarm_id TEXT NOT NULL,
+            sender_agent TEXT NOT NULL,
+            broadcast_type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            origin_session TEXT,
+            origin_agent TEXT,
+            created_at_ts INTEGER,
+            signature TEXT
+        )
+    """)
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
+    conn.execute(
+        """
+        INSERT INTO broadcasts
+        (id, swarm_id, sender_agent, broadcast_type, payload, created_at,
+         origin_session, origin_agent, created_at_ts, signature)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (broadcast_id, swarm_id, sender_agent, broadcast_type, payload, now,
+         origin_session, origin_agent, created_at_ts, signature)
+    )
+
+    conn.commit()
+    conn.close()
+    print(f"ok:{broadcast_id}")
+except Exception as e:
+    print(f"error: {e}")
+    sys.exit(1)
+`;
+
+    const args = [
+      dbPath,
+      broadcastId,
+      swarmId,
+      senderAgent,
+      broadcastType,
+      payloadStr,
+      origin_session,
+      origin_agent || 'null',
+      String(now_ts),
+      signature
+    ];
+
+    const result = runPythonQuery(pythonScript, args);
+
+    if (!result.success || !result.stdout.startsWith('ok:')) {
+      return {
+        success: false,
+        error: result.stderr || result.stdout || 'Failed to record broadcast'
+      };
+    }
+
+    return { success: true, broadcastId };
+  } catch (err) {
+    return {
+      success: false,
+      error: `Broadcast signing failed: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+}
+
+/**
+ * Generate a unique broadcast ID.
+ *
+ * @returns 12-character hex ID
+ */
+function generateBroadcastId(): string {
+  // Generate random 6 bytes, convert to 12-char hex
+  const bytes = new Uint8Array(6);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    // Fallback for Node.js without webcrypto
+    const nodeCrypto = require('crypto') as typeof import('crypto');
+    nodeCrypto.randomFillSync(bytes);
+  }
+  return Array.from(bytes)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 /**
