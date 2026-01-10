@@ -10,6 +10,7 @@
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { runPythonQuery } from './db-utils.js';
+import { generateSessionKey, signEntry } from './crypto-signing.js';
 
 /**
  * Get the path to the memory database.
@@ -149,7 +150,9 @@ except Exception as e:
 }
 
 /**
- * Store a learning with provenance metadata.
+ * Store a learning with provenance metadata and signature.
+ *
+ * V1.6: Adds HMAC-SHA256 signature to learning entries.
  *
  * @param sessionId - Session that created this learning
  * @param content - Learning content
@@ -165,6 +168,57 @@ export function storeLearning(
 ): { success: boolean; error?: string; id?: number } {
   const dbPath = getMemoryDbPath();
 
+  try {
+    // V1.6: Generate session key if not exists and sign the learning
+    generateSessionKey(sessionId);
+
+    // Build data to sign
+    const now_ts = Math.floor(Date.now() / 1000);
+    const origin_session = sessionId;
+    const origin_agent_val = originAgent || process.env.AGENT_ID || null;
+
+    const dataToSign = {
+      session_id: sessionId,
+      content: content,
+      learning_type: learningType,
+      origin_session: origin_session,
+      origin_agent: origin_agent_val,
+      created_at_ts: now_ts,
+    };
+
+    // Sign the entry
+    const signature = signEntry(dataToSign, sessionId);
+
+    // Pass signature to Python script
+    return storeLearningWithSignature(
+      sessionId,
+      content,
+      learningType,
+      origin_agent_val,
+      now_ts,
+      signature,
+      dbPath
+    );
+  } catch (err) {
+    return {
+      success: false,
+      error: `Signing failed: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+}
+
+/**
+ * Internal: Store learning with pre-computed signature
+ */
+function storeLearningWithSignature(
+  sessionId: string,
+  content: string,
+  learningType: string,
+  originAgent: string | null,
+  created_at_ts: number,
+  signature: string,
+  dbPath: string
+): { success: boolean; error?: string; id?: number } {
   const pythonScript = `
 import sqlite3
 import sys
@@ -176,6 +230,8 @@ session_id = sys.argv[2]
 content = sys.argv[3]
 learning_type = sys.argv[4]
 origin_agent = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] != 'null' else None
+created_at_ts = int(sys.argv[6]) if len(sys.argv) > 6 else None
+signature = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] != 'null' else None
 
 try:
     # Ensure directory exists
@@ -201,16 +257,18 @@ try:
     """)
 
     now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-    now_ts = int(datetime.now(timezone.utc).timestamp())
+    # Use provided timestamp if given, otherwise compute
+    if created_at_ts is None:
+        created_at_ts = int(datetime.now(timezone.utc).timestamp())
 
-    # Insert with provenance
+    # Insert with provenance and signature
     cursor = conn.execute(
         """
         INSERT INTO learnings
-        (session_id, content, learning_type, created_at, origin_session, origin_agent, created_at_ts)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (session_id, content, learning_type, created_at, origin_session, origin_agent, created_at_ts, signature)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, content, learning_type, now, session_id, origin_agent, now_ts)
+        (session_id, content, learning_type, now, session_id, origin_agent, created_at_ts, signature)
     )
 
     learning_id = cursor.lastrowid
@@ -227,7 +285,9 @@ except Exception as e:
     sessionId,
     content,
     learningType,
-    originAgent || 'null'
+    originAgent || 'null',
+    String(created_at_ts),
+    signature
   ];
 
   const result = runPythonQuery(pythonScript, args);
