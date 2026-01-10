@@ -12,6 +12,7 @@ import { existsSync } from 'fs';
 import { runPythonQuery } from './db-utils.js';
 import { generateSessionKey, signEntry } from './crypto-signing.js';
 import { enforceSecurePermissions } from './db-permissions.js';
+import { validateSession, validateAgent } from './session-registry.js';
 
 /**
  * Get the path to the memory database.
@@ -227,6 +228,20 @@ function storeLearningWithSignature(
   signature: string,
   dbPath: string
 ): { success: boolean; error?: string; id?: number } {
+  // V1.12: Validate session ID
+  const sessionValidation = validateSession(sessionId);
+  if (!sessionValidation.valid) {
+    return { success: false, error: sessionValidation.error };
+  }
+
+  // V1.12: Validate agent ID if provided
+  if (originAgent) {
+    const agentValidation = validateAgent(originAgent);
+    if (!agentValidation.valid) {
+      return { success: false, error: agentValidation.error };
+    }
+  }
+
   const pythonScript = `
 import sqlite3
 import sys

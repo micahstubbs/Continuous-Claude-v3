@@ -17,6 +17,7 @@ import { join } from 'path';
 import type { QueryResult } from './types.js';
 import { generateSessionKey, signEntry } from './crypto-signing.js';
 import { enforceSecurePermissions } from './db-permissions.js';
+import { validateSession, validateAgent } from './session-registry.js';
 
 // Re-export SAFE_ID_PATTERN and isValidId from pattern-router for convenience
 export { SAFE_ID_PATTERN, isValidId } from './pattern-router.js';
@@ -184,6 +185,19 @@ function registerAgentWithSignature(
   signature: string,
   dbPath: string
 ): { success: boolean; error?: string } {
+  // V1.12: Validate session ID
+  const sessionValidation = validateSession(sessionId);
+  if (!sessionValidation.valid) {
+    return { success: false, error: sessionValidation.error };
+  }
+
+  // V1.12: Validate agent ID if provided
+  if (origin_agent) {
+    const agentValidation = validateAgent(origin_agent);
+    if (!agentValidation.valid) {
+      return { success: false, error: agentValidation.error };
+    }
+  }
 
   const pythonScript = `
 import sqlite3
@@ -401,6 +415,18 @@ export function recordBroadcast(
   sessionId: string
 ): { success: boolean; error?: string; broadcastId?: string } {
   const dbPath = getDbPath();
+
+  // V1.12: Validate session ID
+  const sessionValidation = validateSession(sessionId);
+  if (!sessionValidation.valid) {
+    return { success: false, error: sessionValidation.error };
+  }
+
+  // V1.12: Validate sender agent ID
+  const agentValidation = validateAgent(senderAgent);
+  if (!agentValidation.valid) {
+    return { success: false, error: agentValidation.error };
+  }
 
   try {
     // Generate session key if not exists

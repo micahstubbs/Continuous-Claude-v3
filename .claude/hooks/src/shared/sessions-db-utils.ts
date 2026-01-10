@@ -12,6 +12,7 @@ import { existsSync } from 'fs';
 import { runPythonQuery } from './db-utils.js';
 import { generateSessionKey, signEntry } from './crypto-signing.js';
 import { enforceSecurePermissions } from './db-permissions.js';
+import { validateSession } from './session-registry.js';
 
 /**
  * Get the path to the sessions database.
@@ -222,6 +223,12 @@ function registerSessionWithSignature(
   signature: string,
   dbPath: string
 ): { success: boolean; error?: string } {
+  // V1.12: Validate session ID
+  const sessionValidation = validateSession(sessionId);
+  if (!sessionValidation.valid) {
+    return { success: false, error: sessionValidation.error };
+  }
+
   const pythonScript = `
 import sqlite3
 import sys
