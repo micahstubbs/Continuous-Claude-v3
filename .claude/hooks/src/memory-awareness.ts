@@ -11,9 +11,10 @@
  * 4. Claude proactively discloses and acts on relevant memories
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, appendFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
+import { containsPromptInjection, detectPromptInjection } from './shared/security-utils.js';
 
 interface UserPromptSubmitInput {
   session_id: string;
@@ -101,6 +102,21 @@ function extractKeywords(prompt: string): string {
 }
 
 /**
+ * Log security events for audit trail.
+ * Writes to .claude/security-audit.log in JSON Lines format.
+ */
+function logSecurityEvent(projectDir: string, event: Record<string, unknown>): void {
+  try {
+    const logPath = join(projectDir, '.claude', 'security-audit.log');
+    const logLine = JSON.stringify(event) + '\n';
+    appendFileSync(logPath, logLine, { flag: 'a' });
+  } catch {
+    // Silent fail - don't disrupt normal operation
+    // Security logging is best-effort
+  }
+}
+
+/**
  * Fast memory relevance check using text search.
  * For text-only mode, we search by the most significant keyword
  * (text ILIKE looks for substring match, not multi-word).
@@ -149,8 +165,29 @@ function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch |
     // ts_rank returns small values (0.0001-0.1), ILIKE fallback returns 0.1
     // Any match from FTS is relevant enough to show
 
+    // SECURITY: Filter out entries containing prompt injection patterns
+    const safeResults = data.results.filter((r: any) => {
+      const content = r.content || '';
+      if (containsPromptInjection(content)) {
+        // Log blocked entry for security audit
+        const patterns = detectPromptInjection(content);
+        logSecurityEvent(projectDir, {
+          event: 'MEMORY_POISONING_BLOCKED',
+          entryId: r.id || 'unknown',
+          patterns,
+          timestamp: new Date().toISOString(),
+        });
+        return false;  // Filter out poisoned entry
+      }
+      return true;
+    });
+
+    if (safeResults.length === 0) {
+      return null;
+    }
+
     // Extract structured results with better previews
-    const results: LearningResult[] = data.results.slice(0, 3).map((r: any) => {
+    const results: LearningResult[] = safeResults.slice(0, 3).map((r: any) => {
       const content = r.content || '';
       // Get first meaningful line up to 120 chars
       const preview = content
@@ -169,7 +206,7 @@ function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch |
     });
 
     return {
-      count: data.results.length,
+      count: safeResults.length,
       results
     };
   } catch {
