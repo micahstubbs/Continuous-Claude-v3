@@ -29,6 +29,7 @@ import {
   DEFAULT_MEMORY_LIMITS
 } from './shared/memory-limits.js';
 import { ContextBroker } from './shared/context-broker.js';
+import { monitorAssembledContext } from './shared/context-broker-monitor.js';
 
 interface UserPromptSubmitInput {
   session_id: string;
@@ -328,6 +329,9 @@ async function main() {
 
     // Assemble context with trust markers
     const assembled = broker.assemble();
+
+    // V4.7: Monitor and log security events
+    monitorAssembledContext(assembled, sessionId, 'memory-awareness');
 
     // Build output with trust-aware context
     const claudeContext = `MEMORY MATCH (${match.count} results) for "${intent}":\n\n${assembled.formatted_output}\n\nUse /recall "${intent}" for full content. Disclose if helpful.`;

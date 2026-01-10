@@ -11,6 +11,7 @@ import {
   type ProvenanceMetadata
 } from './shared/provenance-types.js';
 import { ContextBroker } from './shared/context-broker.js';
+import { monitorAssembledContext } from './shared/context-broker-monitor.js';
 
 interface PreToolUseInput {
     session_id: string;
@@ -189,6 +190,9 @@ print(json.dumps(broadcasts))
 
             // Assemble context with trust markers
             const assembled = broker.assemble();
+
+            // V4.7: Monitor and log security events
+            monitorAssembledContext(assembled, sessionId, 'pre-tool-use-broadcast');
 
             // Build output with trust-aware context
             const contextMessage = `\n--- SWARM BROADCASTS ---\n${assembled.formatted_output}------------------------\n`;

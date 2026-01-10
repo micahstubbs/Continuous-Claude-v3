@@ -7,6 +7,7 @@ import {
   SourceType,
 } from './shared/provenance-types.js';
 import { ContextBroker } from './shared/context-broker.js';
+import { monitorAssembledContext } from './shared/context-broker-monitor.js';
 
 interface SessionStartInput {
   type?: 'startup' | 'resume' | 'clear' | 'compact';  // Legacy field
@@ -555,6 +556,9 @@ async function main() {
     }
 
     const assembled = broker.assemble();
+
+    // V4.7: Monitor and log security events
+    monitorAssembledContext(assembled, sessionId, 'session-start-continuity');
 
     // Output with proper format per Claude Code docs
     const output: any = { result: 'continue' };
