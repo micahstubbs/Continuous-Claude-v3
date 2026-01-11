@@ -6,15 +6,156 @@
  *
  * Security: CWE-345 (Insufficient Verification of Data Authenticity) mitigation
  * Audit: Round 2 V1 - Unauthenticated coordination/memory stores
+ * Audit: Round 3 V1 - Persist session keys (CVSS 8.2)
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
+import { dirname, join } from 'path';
+
+// ============================================================================
+// Key Persistence (R3-V1)
+// ============================================================================
 
 /**
- * Session key storage (in-memory)
- * In production, this should be persisted securely and rotated periodically
+ * Session key storage
+ * Keys are persisted to file and loaded on startup
  */
 const sessionKeys = new Map<string, Buffer>();
+
+/**
+ * Key file path - defaults to .claude/cache/session-keys.json
+ * Can be overridden for testing via setKeyFilePath()
+ */
+let keyFilePath: string | null = null;
+
+/**
+ * Whether key persistence is initialized
+ */
+let keyPersistenceInitialized = false;
+
+/**
+ * Get the key file path, computing it lazily if needed
+ */
+function getKeyFilePath(): string {
+    if (keyFilePath) {
+        return keyFilePath;
+    }
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    return join(projectDir, '.claude', 'cache', 'session-keys.json');
+}
+
+/**
+ * Set the key file path (for testing or configuration)
+ * @param path - Absolute path to the key file
+ */
+export function setKeyFilePath(path: string | null): void {
+    keyFilePath = path;
+    keyPersistenceInitialized = false;
+}
+
+/**
+ * Load session keys from persistent storage
+ * Called automatically on first access; can be called explicitly to re-initialize
+ *
+ * R3-V1: Fail closed - if file exists but is corrupted, do not accept any keys
+ *
+ * @returns true if keys were loaded successfully, false if no file or error
+ */
+export function loadSessionKeys(): boolean {
+    const filePath = getKeyFilePath();
+
+    if (!existsSync(filePath)) {
+        keyPersistenceInitialized = true;
+        return false;
+    }
+
+    try {
+        const data = readFileSync(filePath, 'utf8');
+        const parsed = JSON.parse(data);
+
+        // Validate structure
+        if (!parsed || typeof parsed !== 'object' || !parsed.keys || typeof parsed.keys !== 'object') {
+            // Corrupted file - fail closed, do not load any keys
+            console.error('[crypto-signing] Key file corrupted: invalid structure');
+            keyPersistenceInitialized = true;
+            return false;
+        }
+
+        // Load keys
+        for (const [sessionId, keyB64] of Object.entries(parsed.keys)) {
+            if (typeof keyB64 === 'string') {
+                try {
+                    const key = Buffer.from(keyB64, 'base64');
+                    // Validate key length (32 bytes expected)
+                    if (key.length === 32) {
+                        sessionKeys.set(sessionId, key);
+                    }
+                } catch {
+                    // Skip invalid key entry
+                }
+            }
+        }
+
+        keyPersistenceInitialized = true;
+        return sessionKeys.size > 0;
+    } catch (err) {
+        // File exists but cannot be read/parsed - fail closed
+        console.error('[crypto-signing] Failed to load keys:', err instanceof Error ? err.message : 'unknown error');
+        keyPersistenceInitialized = true;
+        return false;
+    }
+}
+
+/**
+ * Persist session keys to storage
+ * Sets file permissions to 0600 (owner read/write only)
+ *
+ * @returns true if keys were persisted successfully
+ */
+function persistSessionKeys(): boolean {
+    const filePath = getKeyFilePath();
+
+    try {
+        // Ensure directory exists
+        const dir = dirname(filePath);
+        if (!existsSync(dir)) {
+            mkdirSync(dir, { recursive: true, mode: 0o700 });
+        }
+
+        // Build key object
+        const keys: Record<string, string> = {};
+        for (const [sessionId, key] of sessionKeys.entries()) {
+            keys[sessionId] = key.toString('base64');
+        }
+
+        const data = JSON.stringify({
+            version: 1,
+            created_at: new Date().toISOString(),
+            keys,
+        }, null, 2);
+
+        // Write with restrictive permissions
+        writeFileSync(filePath, data, { encoding: 'utf8', mode: 0o600 });
+
+        // Ensure permissions are set (in case file existed with different perms)
+        chmodSync(filePath, 0o600);
+
+        return true;
+    } catch (err) {
+        console.error('[crypto-signing] Failed to persist keys:', err instanceof Error ? err.message : 'unknown error');
+        return false;
+    }
+}
+
+/**
+ * Ensure key persistence is initialized (lazy loading)
+ */
+function ensureKeyPersistenceInitialized(): void {
+    if (!keyPersistenceInitialized) {
+        loadSessionKeys();
+    }
+}
 
 /**
  * Generate a new session key for HMAC signing
@@ -23,9 +164,15 @@ const sessionKeys = new Map<string, Buffer>();
  * @returns The generated key in base64 format
  */
 export function generateSessionKey(sessionId: string): string {
+    ensureKeyPersistenceInitialized();
+
     // Generate cryptographically secure 32-byte key
     const key = randomBytes(32);
     sessionKeys.set(sessionId, key);
+
+    // Persist to storage
+    persistSessionKeys();
+
     return key.toString('base64');
 }
 
@@ -36,6 +183,7 @@ export function generateSessionKey(sessionId: string): string {
  * @returns The session key buffer, or null if not found
  */
 function getSessionKey(sessionId: string): Buffer | null {
+    ensureKeyPersistenceInitialized();
     return sessionKeys.get(sessionId) || null;
 }
 
@@ -146,7 +294,9 @@ export function verifyDatabaseEntry<T extends Record<string, unknown>>(
  * @param sessionId - Session identifier
  */
 export function revokeSessionKey(sessionId: string): void {
+    ensureKeyPersistenceInitialized();
     sessionKeys.delete(sessionId);
+    persistSessionKeys();
 }
 
 /**
@@ -155,6 +305,7 @@ export function revokeSessionKey(sessionId: string): void {
  * @returns Array of active session IDs
  */
 export function getActiveSessions(): string[] {
+    ensureKeyPersistenceInitialized();
     return Array.from(sessionKeys.keys());
 }
 
