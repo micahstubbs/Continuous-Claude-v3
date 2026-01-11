@@ -362,13 +362,23 @@ export class ContextBroker {
       if (verification.valid) {
         verified.push(block);
       } else if (this.config.demoteFailedVerification) {
-        // Demote to low-trust instead of rejecting
+        // R3-V4: Demote to low-trust AND re-sanitize content
+        // Since verification failed, we must treat content as untrusted
+        let demotedContent = block.content;
+
+        // Re-sanitize the content since it wasn't sanitized during registration
+        // (it may have had a fake signature that gave it higher trust)
+        if (this.config.stripInstructions && !block.sanitized) {
+          demotedContent = this.sanitize(demotedContent, TrustTier.Low);
+        }
+
         const demotedBlock: ContextBlock = {
           ...block,
           trust_tier: TrustTier.Low,
           requires_confirmation: true,
+          sanitized: true, // Mark as sanitized after demotion
           // Add verification failure marker to content
-          content: `[VERIFICATION FAILED: ${verification.error}]\n${block.content}`,
+          content: `[VERIFICATION FAILED: ${verification.error}]\n${demotedContent}`,
         };
         verified.push(demotedBlock);
 
@@ -473,10 +483,41 @@ export class ContextBroker {
 
   /**
    * Compute trust tier from provenance metadata
+   *
+   * R3-V4: Verify signature before computing trust tier (not just presence check)
    */
   private computeTrustTier(provenance: ProvenanceMetadata): TrustTier {
-    // Use existing trust-tier.ts logic with signature validation
-    const signatureValid = provenance.signature !== undefined;
+    // R3-V4: Actually verify the signature, not just check for presence
+    let signatureValid = false;
+
+    if (provenance.signature) {
+      try {
+        signatureValid = verifyProvenance(provenance);
+        if (!signatureValid) {
+          // Log security event for fake signature
+          this.logSecurityEvent({
+            type: 'provenance_verification_failed',
+            block_id: 'pre-registration',
+            source_type: provenance.source_type,
+            trust_tier: TrustTier.Low, // Will be computed as Low
+            verification_error: 'Signature verification failed at registration',
+            timestamp: Date.now(),
+          });
+        }
+      } catch (err) {
+        // Verification error = treat as unsigned
+        signatureValid = false;
+        this.logSecurityEvent({
+          type: 'provenance_verification_failed',
+          block_id: 'pre-registration',
+          source_type: provenance.source_type,
+          trust_tier: TrustTier.Low,
+          verification_error: `Verification error: ${err instanceof Error ? err.message : 'unknown'}`,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
     const trustLevel = computeTrustLevel(provenance, signatureValid);
     return trustLevelToTier(trustLevel);
   }
