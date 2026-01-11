@@ -157,3 +157,97 @@ export function revokeSessionKey(sessionId: string): void {
 export function getActiveSessions(): string[] {
     return Array.from(sessionKeys.keys());
 }
+
+// ============================================================================
+// V3.7: Provenance Signing
+// ============================================================================
+
+/**
+ * Provenance metadata structure (imported type reference)
+ * Actual type is defined in provenance-types.ts to avoid circular dependencies
+ */
+interface ProvenanceForSigning {
+    session_id: string;
+    agent_id: string | null;
+    timestamp: number;
+    trust_level: string;
+    source_type: string;
+    content_hash: string;
+    signature?: string;
+    metadata?: Record<string, unknown>;
+}
+
+/**
+ * Sign provenance metadata with content hash
+ *
+ * V3.7: Signs the provenance fields + content_hash to ensure integrity
+ * of the entire context item. Uses the session key from the origin session.
+ *
+ * @param provenance - Provenance metadata to sign (without signature field)
+ * @returns HMAC signature in base64 format
+ * @throws Error if session key not found
+ */
+export function signProvenance(provenance: ProvenanceForSigning): string {
+    const sessionId = provenance.session_id;
+
+    // Extract canonical fields for signing (exclude signature itself)
+    const { signature: _, metadata: __, ...coreFields } = provenance;
+
+    // Create a deterministic string for signing
+    const dataToSign = {
+        session_id: coreFields.session_id,
+        agent_id: coreFields.agent_id,
+        timestamp: coreFields.timestamp,
+        trust_level: coreFields.trust_level,
+        source_type: coreFields.source_type,
+        content_hash: coreFields.content_hash,
+    };
+
+    return signEntry(dataToSign, sessionId);
+}
+
+/**
+ * Verify provenance metadata signature
+ *
+ * V3.7: Verifies that provenance + content_hash hasn't been tampered with.
+ *
+ * @param provenance - Provenance metadata with signature
+ * @returns true if signature is valid, false otherwise
+ */
+export function verifyProvenance(provenance: ProvenanceForSigning): boolean {
+    if (!provenance.signature) {
+        return false;
+    }
+
+    const sessionId = provenance.session_id;
+
+    // Extract canonical fields for verification (same order as signing)
+    const dataToVerify = {
+        session_id: provenance.session_id,
+        agent_id: provenance.agent_id,
+        timestamp: provenance.timestamp,
+        trust_level: provenance.trust_level,
+        source_type: provenance.source_type,
+        content_hash: provenance.content_hash,
+    };
+
+    return verifyEntry(dataToVerify, provenance.signature, sessionId);
+}
+
+/**
+ * Add signature to provenance metadata
+ *
+ * V3.7: Convenience function that creates a signed copy of provenance.
+ *
+ * @param provenance - Provenance metadata without signature
+ * @returns Copy of provenance with signature field added
+ */
+export function signedProvenance<T extends ProvenanceForSigning>(
+    provenance: T
+): T & { signature: string } {
+    const signature = signProvenance(provenance);
+    return {
+        ...provenance,
+        signature,
+    };
+}
