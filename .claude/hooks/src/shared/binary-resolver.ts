@@ -5,12 +5,62 @@
  * they exist in trusted locations. Prevents PATH hijacking attacks.
  *
  * Security: CWE-426 (Untrusted Search Path) mitigation
+ * Security: CWE-59 (Link Following) mitigation
  * Audit: Round 2 V2 - PATH hijack for security-sensitive subprocesses
+ * Audit: Round 3 V3 - Symlink bypass and untrusted which (CVSS 8.1)
  */
 
 import { execFileSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync, statSync } from 'fs';
 import { resolve } from 'path';
+
+// ============================================================================
+// R3-V3: Trusted which path
+// ============================================================================
+
+/**
+ * Absolute path to trusted `which` binary
+ * R3-V3: Use hardcoded path instead of PATH-dependent resolution
+ */
+const TRUSTED_WHICH_PATHS = [
+  '/usr/bin/which',
+  '/bin/which',
+] as const;
+
+/**
+ * Cached trusted which path (resolved once at first use)
+ */
+let trustedWhichPath: string | null = null;
+
+/**
+ * Get the trusted `which` binary path
+ * R3-V3: Validates the which binary exists and is a real file
+ *
+ * @returns Absolute path to trusted which, or null if not found
+ */
+function getTrustedWhichPath(): string | null {
+  if (trustedWhichPath) {
+    return trustedWhichPath;
+  }
+
+  for (const whichPath of TRUSTED_WHICH_PATHS) {
+    if (existsSync(whichPath)) {
+      try {
+        // Resolve symlinks and validate it's a regular file
+        const realPath = realpathSync(whichPath);
+        const stat = statSync(realPath);
+        if (stat.isFile()) {
+          trustedWhichPath = whichPath;
+          return trustedWhichPath;
+        }
+      } catch {
+        // Skip invalid paths
+      }
+    }
+  }
+
+  return null;
+}
 
 /**
  * Trusted binary directories (allowlist)
@@ -58,34 +108,69 @@ const resolvedPaths = new Map<Binary, string>();
 let sanitizedPath: string | null = null;
 
 /**
- * Resolve the absolute path to a binary using `which`
+ * Resolve the absolute path to a binary using trusted `which`
+ *
+ * R3-V3: Uses absolute path to trusted which, resolves symlinks with realpath,
+ * and validates the resolved path is in a trusted directory
  *
  * @param binary - Binary name to resolve
  * @returns Absolute path or null if not found
  */
 function resolveBinaryPath(binary: string): string | null {
   try {
-    // Use `which` to find the binary (itself must be in PATH initially)
-    const result = execFileSync('which', [binary], {
+    // R3-V3: Use trusted which instead of PATH-dependent resolution
+    const whichPath = getTrustedWhichPath();
+    if (!whichPath) {
+      console.error('[binary-resolver] No trusted which binary found');
+      return null;
+    }
+
+    // Use trusted which with minimal PATH
+    const result = execFileSync(whichPath, [binary], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 5000,
+      env: {
+        // R3-V3: Use fixed minimal PATH during resolution
+        PATH: TRUSTED_BINARY_DIRS.filter(existsSync).join(':'),
+      },
     });
 
     const path = result.trim();
 
-    // Validate the path exists and is in a trusted directory
+    // Validate the path exists
     if (!existsSync(path)) {
       return null;
     }
 
-    // Check if path is in a trusted directory
-    const isTrusted = TRUSTED_BINARY_DIRS.some(dir =>
-      path.startsWith(resolve(dir) + '/')
-    );
+    // R3-V3: Resolve symlinks to get the actual file location
+    let realPath: string;
+    try {
+      realPath = realpathSync(path);
+    } catch (err) {
+      console.error(`[binary-resolver] Failed to resolve symlinks for: ${path}`);
+      return null;
+    }
+
+    // R3-V3: Validate the RESOLVED path (not the symlink) is in a trusted directory
+    const isTrusted = TRUSTED_BINARY_DIRS.some(dir => {
+      const resolvedDir = resolve(dir);
+      return realPath.startsWith(resolvedDir + '/') || realPath === resolvedDir;
+    });
 
     if (!isTrusted) {
-      console.error(`[binary-resolver] Rejected untrusted binary path: ${path}`);
+      console.error(`[binary-resolver] Rejected: symlink ${path} resolves to untrusted ${realPath}`);
+      return null;
+    }
+
+    // R3-V3: Validate it's a regular file (not a directory, device, etc.)
+    try {
+      const stat = statSync(realPath);
+      if (!stat.isFile()) {
+        console.error(`[binary-resolver] Rejected: ${realPath} is not a regular file`);
+        return null;
+      }
+    } catch {
       return null;
     }
 
