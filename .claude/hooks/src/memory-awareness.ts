@@ -31,6 +31,7 @@ import {
 import { ContextBroker } from './shared/context-broker.js';
 import { monitorAssembledContext } from './shared/context-broker-monitor.js';
 import { verifyEntry } from './shared/crypto-signing.js';
+import { getLegacyMode } from './shared/session-registry.js';
 
 interface UserPromptSubmitInput {
   session_id: string;
@@ -214,9 +215,18 @@ function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch |
       // Check if provenance fields exist
       if (!r.origin_session || !r.signature || !r.created_at_ts) {
         rejectedCount.missing_provenance++;
-        // Log but don't reject legacy entries without provenance (migration path)
-        // After migration is complete, this should reject
-        return true; // Accept legacy entries for now
+        // R3-V2: Handle legacy entries based on mode
+        const mode = getLegacyMode();
+        logSecurityEvent(projectDir, {
+          event: 'MEMORY_PROVENANCE_MISSING',
+          entryId: r.id || 'unknown',
+          mode,
+          timestamp: new Date().toISOString(),
+        });
+        if (mode === 'reject') {
+          return false; // Reject entries without provenance
+        }
+        return true; // Accept legacy entries in 'accept' or 'quarantine' mode
       }
 
       // Verify signature

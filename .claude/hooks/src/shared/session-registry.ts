@@ -5,6 +5,7 @@
  *
  * Security: V1.12 - Session/agent ID validation (Round 2 audit, CVSS 8.1)
  * Audit: Round 2 V1 - Prevent impersonation via fake session/agent IDs
+ * Audit: Round 3 V2 - Reject unsigned/legacy provenance entries (CVSS 8.0)
  */
 
 import { existsSync } from 'fs';
@@ -12,6 +13,51 @@ import { runPythonQuery } from './db-utils.js';
 import { getSessionsDbPath } from './sessions-db-utils.js';
 import { verifyEntry } from './crypto-signing.js';
 import { logSecurityEvent, sanitizeErrorObject } from './error-sanitizer.js';
+
+// ============================================================================
+// R3-V2: Legacy Migration Control
+// ============================================================================
+
+/**
+ * Legacy migration mode configuration
+ *
+ * Set CLAUDE_LEGACY_PROVENANCE_MODE to control behavior:
+ * - "accept" (default during migration): Accept legacy entries with warning
+ * - "reject": Reject all entries without valid provenance
+ * - "quarantine": Accept but mark as quarantined (future: separate handling)
+ *
+ * R3-V2: Fail-closed after migration period
+ */
+export function getLegacyMode(): 'accept' | 'reject' | 'quarantine' {
+  const mode = process.env.CLAUDE_LEGACY_PROVENANCE_MODE?.toLowerCase();
+  if (mode === 'reject' || mode === 'quarantine') {
+    return mode;
+  }
+  return 'accept'; // Default during migration
+}
+
+/**
+ * Handle a legacy entry (missing provenance)
+ *
+ * R3-V2: Centralized handling for legacy entries
+ *
+ * @param entityType - 'session' or 'agent'
+ * @param entityId - ID of the entity
+ * @returns true if entry should be accepted, false if rejected
+ */
+function handleLegacyEntry(entityType: string, entityId: string): boolean {
+  const mode = getLegacyMode();
+
+  logSecurityEvent('PROVENANCE_MISSING', 'session-registry',
+    `${entityType} ${entityId.slice(0, 8)}... missing provenance (mode: ${mode})`);
+
+  if (mode === 'reject') {
+    return false;
+  }
+
+  // 'accept' or 'quarantine' - allow but logged
+  return true;
+}
 
 /**
  * Check if a session ID is currently active
@@ -115,10 +161,12 @@ except Exception:
       logSecurityEvent('VERIFICATION_FAILED', 'session-registry', sanitizeErrorObject(err));
       return false;
     }
+
+    return true; // Valid provenance
   }
 
-  // Legacy entries (parts[1] === 'legacy') are accepted for migration path
-  return true;
+  // R3-V2: Handle legacy entries through centralized function
+  return handleLegacyEntry('session', sessionId);
 }
 
 /**
@@ -225,10 +273,12 @@ except Exception:
       logSecurityEvent('VERIFICATION_FAILED', 'session-registry', sanitizeErrorObject(err));
       return false;
     }
+
+    return true; // Valid provenance
   }
 
-  // Legacy entries (parts[1] === 'legacy') are accepted for migration path
-  return true;
+  // R3-V2: Handle legacy entries through centralized function
+  return handleLegacyEntry('agent', agentId);
 }
 
 /**
