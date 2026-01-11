@@ -11,6 +11,7 @@ import { existsSync } from 'fs';
 import { runPythonQuery } from './db-utils.js';
 import { getSessionsDbPath } from './sessions-db-utils.js';
 import { verifyEntry } from './crypto-signing.js';
+import { logSecurityEvent, sanitizeErrorObject } from './error-sanitizer.js';
 
 /**
  * Check if a session ID is currently active
@@ -107,11 +108,11 @@ except Exception:
 
       const isValid = verifyEntry(dataToVerify, signature, originSession);
       if (!isValid) {
-        console.error(`SECURITY: Session ${sessionId} has invalid signature`);
+        logSecurityEvent('SIGNATURE_INVALID', 'session-registry', 'Session signature verification failed');
         return false; // Reject sessions with invalid signatures
       }
     } catch (err) {
-      console.error(`SECURITY: Session ${sessionId} signature verification error: ${err}`);
+      logSecurityEvent('VERIFICATION_FAILED', 'session-registry', sanitizeErrorObject(err));
       return false;
     }
   }
@@ -217,11 +218,11 @@ except Exception:
 
       const isValid = verifyEntry(dataToVerify, signature, originSession);
       if (!isValid) {
-        console.error(`SECURITY: Agent ${agentId} has invalid signature`);
+        logSecurityEvent('SIGNATURE_INVALID', 'session-registry', 'Agent signature verification failed');
         return false; // Reject agents with invalid signatures
       }
     } catch (err) {
-      console.error(`SECURITY: Agent ${agentId} signature verification error: ${err}`);
+      logSecurityEvent('VERIFICATION_FAILED', 'session-registry', sanitizeErrorObject(err));
       return false;
     }
   }

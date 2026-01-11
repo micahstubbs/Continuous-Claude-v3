@@ -14,6 +14,7 @@ import { ContextBroker } from './shared/context-broker.js';
 import { monitorAssembledContext } from './shared/context-broker-monitor.js';
 import { verifyEntry } from './shared/crypto-signing.js';
 import { validateSession } from './shared/session-registry.js';
+import { logSecurityEvent, logError } from './shared/error-sanitizer.js';
 
 interface PreToolUseInput {
     session_id: string;
@@ -43,7 +44,7 @@ function sanitizeBroadcastPayload(payload: unknown): string {
     // Check for prompt injection patterns
     if (containsPromptInjection(jsonStr)) {
         // Log security event (but don't block - just sanitize)
-        console.error(`SECURITY: Broadcast payload contained suspicious content`);
+        logSecurityEvent('INJECTION_DETECTED', 'pre-tool-use-broadcast', 'Broadcast payload contained suspicious content');
         return JSON.stringify({ sanitized: true, reason: 'potential_injection' });
     }
 
@@ -153,7 +154,7 @@ print(json.dumps(broadcasts))
             // Check if provenance fields exist
             if (!b.origin_session || !b.signature || !b.timestamp) {
                 rejectedCount.missing_provenance++;
-                console.error(`SECURITY: Rejected broadcast from ${b.sender} - missing provenance fields`);
+                logSecurityEvent('PROVENANCE_MISSING', 'pre-tool-use-broadcast', 'Broadcast missing provenance fields');
                 continue;
             }
 
@@ -161,7 +162,7 @@ print(json.dumps(broadcasts))
             const sessionValidation = validateSession(b.origin_session);
             if (!sessionValidation.valid) {
                 rejectedCount.inactive_session++;
-                console.error(`SECURITY: Rejected broadcast from ${b.sender} - inactive session ${b.origin_session}`);
+                logSecurityEvent('SESSION_INACTIVE', 'pre-tool-use-broadcast', 'Broadcast from inactive session');
                 continue;
             }
 
@@ -181,7 +182,7 @@ print(json.dumps(broadcasts))
                 const isValid = verifyEntry(dataToVerify, b.signature, b.origin_session);
                 if (!isValid) {
                     rejectedCount.invalid_signature++;
-                    console.error(`SECURITY: Rejected broadcast from ${b.sender} - invalid signature`);
+                    logSecurityEvent('SIGNATURE_INVALID', 'pre-tool-use-broadcast', 'Broadcast signature verification failed');
                     continue;
                 }
 
@@ -189,14 +190,19 @@ print(json.dumps(broadcasts))
                 validBroadcasts.push(b);
             } catch (err) {
                 rejectedCount.invalid_signature++;
-                console.error(`SECURITY: Rejected broadcast from ${b.sender} - signature verification error: ${err}`);
+                logSecurityEvent('VERIFICATION_FAILED', 'pre-tool-use-broadcast', 'Broadcast signature verification error');
                 continue;
             }
         }
 
         // Log rejection summary if any broadcasts were rejected
         if (Object.values(rejectedCount).some(c => c > 0)) {
-            console.error(`SECURITY: Broadcast validation summary - Rejected: ${JSON.stringify(rejectedCount)}, Accepted: ${validBroadcasts.length}`);
+            logSecurityEvent('TRUST_VIOLATION', 'pre-tool-use-broadcast', 'Broadcast validation completed with rejections', {
+                missing_provenance: rejectedCount.missing_provenance,
+                invalid_signature: rejectedCount.invalid_signature,
+                inactive_session: rejectedCount.inactive_session,
+                accepted: validBroadcasts.length
+            });
         }
 
         if (validBroadcasts.length > 0) {
@@ -246,7 +252,7 @@ print(json.dumps(broadcasts))
             const validation = broker.validate();
             if (!validation.valid) {
                 // Log validation errors - broadcasts may be poisoned
-                console.error('SECURITY: Broadcast validation failed:', validation.errors);
+                logSecurityEvent('TRUST_VIOLATION', 'pre-tool-use-broadcast', 'Context broker validation failed');
             }
 
             // Assemble context with trust markers
@@ -274,12 +280,12 @@ print(json.dumps(broadcasts))
         }
     } catch (err) {
         // On error, continue without broadcasts
-        console.error('Broadcast query error:', err);
+        logError('pre-tool-use-broadcast', err);
         console.log(JSON.stringify({ result: 'continue' }));
     }
 }
 
 main().catch(err => {
-    console.error('Uncaught error:', err);
+    logError('pre-tool-use-broadcast', err);
     console.log(JSON.stringify({ result: 'continue' }));
 });
