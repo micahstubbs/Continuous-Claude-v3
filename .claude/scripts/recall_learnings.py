@@ -49,9 +49,11 @@ def search_sqlite(query: str, k: int = 5) -> list[dict[str, Any]]:
         )
         if not cursor.fetchone():
             # Fallback to LIKE search on regular table
+            # V1.9: Include provenance fields for validation
             cursor = conn.execute(
                 """
-                SELECT id, session_id, content, learning_type, created_at
+                SELECT id, session_id, content, learning_type, created_at,
+                       origin_session, origin_agent, created_at_ts, signature
                 FROM learnings
                 WHERE content LIKE ?
                 ORDER BY created_at DESC
@@ -61,9 +63,11 @@ def search_sqlite(query: str, k: int = 5) -> list[dict[str, Any]]:
             )
         else:
             # Use FTS5 with BM25 ranking
+            # V1.9: Include provenance fields for validation
             cursor = conn.execute(
                 """
                 SELECT l.id, l.session_id, l.content, l.learning_type, l.created_at,
+                       l.origin_session, l.origin_agent, l.created_at_ts, l.signature,
                        bm25(learnings_fts) as score
                 FROM learnings_fts fts
                 JOIN learnings l ON fts.rowid = l.id
@@ -76,13 +80,23 @@ def search_sqlite(query: str, k: int = 5) -> list[dict[str, Any]]:
 
         results = []
         for row in cursor:
-            results.append({
+            result = {
                 "id": str(row["id"]),
                 "session_id": row["session_id"],
                 "content": row["content"],
                 "type": row["learning_type"] if "learning_type" in row.keys() else "UNKNOWN",
                 "score": abs(row["score"]) if "score" in row.keys() else 0.5,
-            })
+            }
+            # V1.9: Include provenance fields for validation
+            if "origin_session" in row.keys():
+                result["origin_session"] = row["origin_session"]
+            if "origin_agent" in row.keys():
+                result["origin_agent"] = row["origin_agent"]
+            if "created_at_ts" in row.keys():
+                result["created_at_ts"] = row["created_at_ts"]
+            if "signature" in row.keys():
+                result["signature"] = row["signature"]
+            results.append(result)
         return results
     finally:
         conn.close()

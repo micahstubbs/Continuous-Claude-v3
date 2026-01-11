@@ -30,6 +30,7 @@ import {
 } from './shared/memory-limits.js';
 import { ContextBroker } from './shared/context-broker.js';
 import { monitorAssembledContext } from './shared/context-broker-monitor.js';
+import { verifyEntry } from './shared/crypto-signing.js';
 
 interface UserPromptSubmitInput {
   session_id: string;
@@ -207,9 +208,71 @@ function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch |
       return null;
     }
 
+    // V1.9: Validate provenance for all memory results
+    const rejectedCount = { missing_provenance: 0, invalid_signature: 0 };
+    const validResults = safeResults.filter((r: any) => {
+      // Check if provenance fields exist
+      if (!r.origin_session || !r.signature || !r.created_at_ts) {
+        rejectedCount.missing_provenance++;
+        // Log but don't reject legacy entries without provenance (migration path)
+        // After migration is complete, this should reject
+        return true; // Accept legacy entries for now
+      }
+
+      // Verify signature
+      try {
+        // Reconstruct signed content (must match write path format in memory-db-utils.ts)
+        const dataToVerify = {
+          content: r.content,
+          learning_type: r.type || r.learning_type,
+          session_id: r.session_id,
+          origin_session: r.origin_session,
+          origin_agent: r.origin_agent,
+          created_at_ts: r.created_at_ts
+        };
+
+        const isValid = verifyEntry(dataToVerify, r.signature, r.origin_session);
+        if (!isValid) {
+          rejectedCount.invalid_signature++;
+          logSecurityEvent(projectDir, {
+            event: 'MEMORY_SIGNATURE_INVALID',
+            entryId: r.id || 'unknown',
+            origin_session: r.origin_session,
+            timestamp: new Date().toISOString(),
+          });
+          return false; // Reject entries with invalid signatures
+        }
+
+        return true; // Accept valid entries
+      } catch (err) {
+        rejectedCount.invalid_signature++;
+        logSecurityEvent(projectDir, {
+          event: 'MEMORY_SIGNATURE_ERROR',
+          entryId: r.id || 'unknown',
+          error: String(err),
+          timestamp: new Date().toISOString(),
+        });
+        return false;
+      }
+    });
+
+    // Log rejection summary if any entries were rejected
+    if (rejectedCount.invalid_signature > 0) {
+      logSecurityEvent(projectDir, {
+        event: 'MEMORY_PROVENANCE_VALIDATION',
+        rejected: rejectedCount,
+        accepted: validResults.length,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    if (validResults.length === 0) {
+      return null;
+    }
+
     // V5: Apply memory size limits before extracting results
     const limitedResults = applyMemoryLimits(
-      safeResults.map((r: any) => ({ ...r, content: r.content || '' })),
+      validResults.map((r: any) => ({ ...r, content: r.content || '' })),
       DEFAULT_MEMORY_LIMITS
     );
 
@@ -245,7 +308,7 @@ function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch |
     });
 
     return {
-      count: safeResults.length,
+      count: validResults.length,
       results
     };
   } catch {
