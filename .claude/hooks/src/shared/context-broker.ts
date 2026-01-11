@@ -20,6 +20,7 @@ import {
 } from './provenance-types.js';
 import { computeTrustLevel } from './trust-tier.js';
 import { containsPromptInjection, detectPromptInjection } from './security-utils.js';
+import { verifyProvenance } from './crypto-signing.js';
 
 /**
  * Trust tier for context blocks (simplified from TrustLevel enum)
@@ -74,11 +75,19 @@ export interface AssembledContext {
  * Security events logged during context assembly
  */
 export interface SecurityEvent {
-  type: 'instruction_detected' | 'low_trust_blocked' | 'sanitization_applied' | 'size_limit_exceeded' | 'reinjection_risk';
+  type:
+    | 'instruction_detected'
+    | 'low_trust_blocked'
+    | 'sanitization_applied'
+    | 'size_limit_exceeded'
+    | 'reinjection_risk'
+    | 'provenance_verification_failed'  // V3.8: Signature verification failure
+    | 'provenance_missing';             // V3.8: Expected signature not present
   block_id: string;
   source_type: SourceType;
   trust_tier: TrustTier;
   pattern_matched?: string;
+  verification_error?: string;          // V3.8: Details about verification failure
   timestamp: number;
 }
 
@@ -109,6 +118,11 @@ export interface BrokerConfig {
   aggressiveSanitization: boolean; // More aggressive pattern matching
   prefixLowTrust: boolean;         // Add [UNVERIFIED] prefix
 
+  // V3.8: Provenance verification
+  verifyProvenanceSignatures: boolean;  // Verify signatures during assembly
+  rejectUnsignedHighTrust: boolean;     // Reject high-trust claims without signature
+  demoteFailedVerification: boolean;    // Demote to low-trust if verification fails
+
   // Monitoring
   logSecurityEvents: boolean;   // Log all security events
   alertOnLowTrust: boolean;     // Alert on low-trust injection
@@ -128,6 +142,11 @@ export const DEFAULT_BROKER_CONFIG: BrokerConfig = {
 
   aggressiveSanitization: true, // Aggressive by default
   prefixLowTrust: true,         // Mark unverified content
+
+  // V3.8: Verification defaults
+  verifyProvenanceSignatures: true,   // Always verify when signatures present
+  rejectUnsignedHighTrust: false,     // Allow legacy unsigned high-trust (for migration)
+  demoteFailedVerification: true,     // Demote failed to low-trust (don't reject)
 
   logSecurityEvents: true,      // Always log
   alertOnLowTrust: true,        // Alert on suspicious content
@@ -286,13 +305,20 @@ export class ContextBroker {
   /**
    * Assemble all blocks into formatted context output
    *
+   * V3.8: Added provenance verification step before assembly.
+   * Verifies signatures, validates trust claims, and demotes/rejects
+   * blocks that fail verification.
+   *
    * @returns Assembled context with formatted output
    */
   assemble(): AssembledContext {
-    // Sort blocks by trust tier (High → Medium → Low)
-    const sorted = this.sortByTrust(this.blocks);
+    // V3.8: Verify provenance before assembly
+    const verifiedBlocks = this.verifyAllBlocks();
 
-    // Calculate trust distribution
+    // Sort blocks by trust tier (High → Medium → Low)
+    const sorted = this.sortByTrust(verifiedBlocks);
+
+    // Calculate trust distribution (after verification may have changed tiers)
     const trust_distribution = this.calculateTrustDistribution();
 
     // Check if any block requires confirmation
@@ -312,6 +338,113 @@ export class ContextBroker {
       formatted_output,
       requires_confirmation,
     };
+  }
+
+  /**
+   * V3.8: Verify provenance for all blocks before assembly
+   *
+   * - Verifies signatures for blocks that claim them
+   * - Demotes blocks with invalid signatures to low-trust
+   * - Logs verification failures as security events
+   *
+   * @returns Verified blocks (may have adjusted trust tiers)
+   */
+  private verifyAllBlocks(): ContextBlock[] {
+    if (!this.config.verifyProvenanceSignatures) {
+      return this.blocks;
+    }
+
+    const verified: ContextBlock[] = [];
+
+    for (const block of this.blocks) {
+      const verification = this.verifyBlockProvenance(block);
+
+      if (verification.valid) {
+        verified.push(block);
+      } else if (this.config.demoteFailedVerification) {
+        // Demote to low-trust instead of rejecting
+        const demotedBlock: ContextBlock = {
+          ...block,
+          trust_tier: TrustTier.Low,
+          requires_confirmation: true,
+          // Add verification failure marker to content
+          content: `[VERIFICATION FAILED: ${verification.error}]\n${block.content}`,
+        };
+        verified.push(demotedBlock);
+
+        this.logSecurityEvent({
+          type: 'provenance_verification_failed',
+          block_id: block.id,
+          source_type: block.source_type,
+          trust_tier: block.trust_tier,
+          verification_error: verification.error,
+          timestamp: Date.now(),
+        });
+      } else {
+        // Reject the block entirely
+        this.logSecurityEvent({
+          type: 'provenance_verification_failed',
+          block_id: block.id,
+          source_type: block.source_type,
+          trust_tier: block.trust_tier,
+          verification_error: verification.error,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    // Update internal blocks list with verified blocks
+    this.blocks = verified;
+    return verified;
+  }
+
+  /**
+   * V3.8: Verify provenance for a single block
+   *
+   * @param block - Block to verify
+   * @returns Verification result with error message if failed
+   */
+  private verifyBlockProvenance(block: ContextBlock): { valid: boolean; error?: string } {
+    const prov = block.provenance;
+
+    // Check if high-trust claims require signatures
+    if (block.trust_tier === TrustTier.High && !prov.signature) {
+      if (this.config.rejectUnsignedHighTrust) {
+        return {
+          valid: false,
+          error: 'High-trust claim without signature',
+        };
+      }
+      // Log warning but allow (migration path)
+      this.logSecurityEvent({
+        type: 'provenance_missing',
+        block_id: block.id,
+        source_type: block.source_type,
+        trust_tier: block.trust_tier,
+        verification_error: 'High-trust without signature',
+        timestamp: Date.now(),
+      });
+    }
+
+    // If signature is present, verify it
+    if (prov.signature) {
+      try {
+        const isValid = verifyProvenance(prov);
+        if (!isValid) {
+          return {
+            valid: false,
+            error: 'Signature verification failed',
+          };
+        }
+      } catch (err) {
+        return {
+          valid: false,
+          error: `Signature verification error: ${err instanceof Error ? err.message : 'unknown'}`,
+        };
+      }
+    }
+
+    return { valid: true };
   }
 
   /**
