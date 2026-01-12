@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-import json, sys, glob
+import json, sys, glob, os, tempfile
 
 data = json.load(sys.stdin)
 if data.get('stop_hook_active'):
     print('{}'); sys.exit(0)
 
-ctx_files = glob.glob('/tmp/claude-context-pct-*.txt')
+tmp_dir = tempfile.gettempdir()
+ctx_files = glob.glob(os.path.join(tmp_dir, 'claude-context-pct-*.txt'))
 if ctx_files:
     try:
         pct = int(open(ctx_files[0]).read().strip())

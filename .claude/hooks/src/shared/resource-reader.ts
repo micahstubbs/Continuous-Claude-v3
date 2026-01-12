@@ -1,7 +1,7 @@
 /**
  * Resource State Reader Utility
  *
- * Reads resource state JSON from /tmp/claude-resources-{sessionId}.json.
+ * Reads resource state JSON from {tmpdir}/claude-resources-{sessionId}.json.
  * This file is written by status.sh (Phase 3) and contains:
  * - freeMemMB: Available RAM in MB
  * - activeAgents: Number of currently running agents
@@ -13,6 +13,8 @@
  */
 
 import { readFileSync, existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // =============================================================================
 // Types
@@ -73,16 +75,16 @@ export function getSessionId(): string {
  * Get the path to the resource state JSON file.
  *
  * @param sessionId - Session ID to use in the filename
- * @returns Path to /tmp/claude-resources-{sessionId}.json
+ * @returns Path to {tmpdir}/claude-resources-{sessionId}.json
  */
 export function getResourceFilePath(sessionId: string): string {
-  return `/tmp/claude-resources-${sessionId}.json`;
+  return join(tmpdir(), `claude-resources-${sessionId}.json`);
 }
 
 /**
  * Read resource state from the JSON file.
  *
- * Reads /tmp/claude-resources-{sessionId}.json and parses it into a
+ * Reads {tmpdir}/claude-resources-{sessionId}.json and parses it into a
  * ResourceState object. Returns null if:
  * - File doesn't exist
  * - File contains invalid JSON
