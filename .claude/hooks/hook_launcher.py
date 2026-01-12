@@ -5,20 +5,21 @@ Replaces bash wrapper scripts (.sh) with a Python launcher that works
 on Windows, macOS, and Linux.
 
 Usage:
-    python -m scripts.hook_launcher <hook-name>
+    python3 .claude/hooks/hook_launcher.py <hook-name>
 
     # In settings.json:
-    "command": "python -m scripts.hook_launcher skill-activation-prompt"
+    "command": "python3 .claude/hooks/hook_launcher.py skill-activation-prompt"
 
 The launcher:
-1. Finds the compiled .mjs script in ~/.claude/hooks/dist/
-2. Pipes stdin JSON to Node.js
-3. Returns the hook's JSON output
+1. Finds the hook script:
+   - .mjs in dist/ (compiled JavaScript)
+   - .ts in src/ (TypeScript source)
+   - .py in root hooks dir (Python scripts)
+2. Uses appropriate interpreter (node, npx tsx, or python3)
+3. Pipes stdin JSON and returns the hook's JSON output
 
-This replaces bash wrappers like:
-    #!/bin/bash
-    cd ~/.claude/hooks
-    cat | node dist/skill-activation-prompt.mjs
+Supports both project-specific hooks ($CLAUDE_PROJECT_DIR/.claude/hooks)
+and user-level hooks (~/.claude/hooks), with project hooks taking precedence.
 """
 
 from __future__ import annotations
@@ -110,30 +111,79 @@ def find_node() -> str | None:
     return None
 
 
-def find_hook_script(name: str) -> tuple[Path | None, Path | None]:
+def find_python() -> str | None:
+    """Find the Python executable.
+
+    Returns:
+        Path to python executable, or None if not found
+    """
+    # Try common names (python3 first for Unix systems)
+    for name in ["python3", "python", "python.exe", "python3.exe"]:
+        path = shutil.which(name)
+        if path:
+            return path
+
+    # On Windows, also check common install locations
+    if sys.platform == "win32":
+        common_paths = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python" / "Python311" / "python.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python" / "Python310" / "python.exe",
+            Path(os.environ.get("PROGRAMFILES", "")) / "Python311" / "python.exe",
+            Path(os.environ.get("PROGRAMFILES", "")) / "Python310" / "python.exe",
+        ]
+        for p in common_paths:
+            if p.exists():
+                return str(p)
+
+    return None
+
+
+def find_hook_script(name: str) -> tuple[Path | None, Path | None, Path | None]:
     """Find the hook script file.
 
     Searches project-specific hooks first, then user hooks.
-    Looks for compiled .mjs in dist/, falls back to .ts in src/.
+    Search order: .mjs in dist/, .ts in src/, .py in root.
 
     Args:
         name: Hook name (e.g., "skill-activation-prompt")
 
     Returns:
-        Tuple of (script_path, hooks_dir) or (None, None) if not found
+        Tuple of (script_path, hooks_dir, project_root) or (None, None, None) if not found
     """
     for hooks_dir in get_hooks_dirs():
+        # Determine project root for this hooks dir
+        project_root = None
+        if hooks_dir == Path.home() / ".claude" / "hooks":
+            # User-level hooks: no specific project root, use home dir
+            project_root = Path.home()
+        else:
+            # Project hooks: extract from hooks_dir path
+            # hooks_dir is like: /path/to/project/.claude/hooks
+            # project_root should be: /path/to/project
+            # Try resolving via CLAUDE_PROJECT_DIR first
+            env_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+            if env_project_dir:
+                project_root = Path(env_project_dir)
+            else:
+                # Fallback: go up two levels from .claude/hooks
+                project_root = hooks_dir.parent.parent
+
         # Try compiled .mjs first
         mjs_path = hooks_dir / "dist" / f"{name}.mjs"
         if mjs_path.exists():
-            return mjs_path, hooks_dir
+            return mjs_path, hooks_dir, project_root
 
         # Fallback to TypeScript source
         ts_path = hooks_dir / "src" / f"{name}.ts"
         if ts_path.exists():
-            return ts_path, hooks_dir
+            return ts_path, hooks_dir, project_root
 
-    return None, None
+        # Python scripts in root hooks directory
+        py_path = hooks_dir / f"{name}.py"
+        if py_path.exists():
+            return py_path, hooks_dir, project_root
+
+    return None, None, None
 
 
 def run_hook(
@@ -153,17 +203,8 @@ def run_hook(
     Returns:
         Dict with keys: returncode, stdout, stderr
     """
-    # Find Node.js
-    node_path = find_node()
-    if not node_path:
-        return {
-            "returncode": 1,
-            "stdout": "",
-            "stderr": "Error: Node.js not found. Please install Node.js.",
-        }
-
-    # Find hook script
-    script_path, hooks_dir = find_hook_script(name)
+    # Find hook script first
+    script_path, hooks_dir, project_root = find_hook_script(name)
     if not script_path:
         search_dirs = ", ".join(str(d) for d in get_hooks_dirs())
         return {
@@ -172,12 +213,29 @@ def run_hook(
             "stderr": f"Error: Hook '{name}' not found in [{search_dirs}]",
         }
 
-    # Build command
-    if script_path.suffix == ".ts":
+    # Build command based on script type
+    if script_path.suffix == ".py":
+        # Use Python for .py scripts
+        python_path = find_python()
+        if not python_path:
+            return {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "Error: Python not found. Please install Python 3.",
+            }
+        cmd = [python_path, str(script_path)]
+    elif script_path.suffix == ".ts":
         # Use npx tsx for TypeScript
         cmd = ["npx", "tsx", str(script_path)]
     else:
         # Use node for compiled .mjs
+        node_path = find_node()
+        if not node_path:
+            return {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "Error: Node.js not found. Please install Node.js.",
+            }
         cmd = [node_path, str(script_path)]
 
     # Prepare environment
@@ -196,7 +254,7 @@ def run_hook(
             text=True,
             timeout=timeout,
             env=run_env,
-            cwd=str(hooks_dir),  # Run from the hooks dir where script was found
+            cwd=str(project_root),  # Run from project root to avoid path doubling
         )
         return {
             "returncode": result.returncode,

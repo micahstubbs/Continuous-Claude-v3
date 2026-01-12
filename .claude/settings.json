@@ -103,7 +103,7 @@
           },
           {
             "type": "command",
-            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/session-symbol-index.py",
+            "command": "python3 .claude/hooks/hook_launcher.py session-symbol-index",
             "timeout": 5
           }
         ]
@@ -147,7 +147,7 @@
           },
           {
             "type": "command",
-            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/premortem-suggest.py",
+            "command": "python3 .claude/hooks/hook_launcher.py premortem-suggest",
             "timeout": 5
           },
           {
@@ -207,7 +207,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 $HOME/.claude/hooks/post-tool-use-tracker.py",
+            "command": "python3 .claude/hooks/hook_launcher.py post-tool-use-tracker",
             "timeout": 120
           }
         ]
@@ -247,7 +247,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/auto-handoff-stop.py"
+            "command": "python3 .claude/hooks/hook_launcher.py auto-handoff-stop"
           },
           {
             "type": "command",

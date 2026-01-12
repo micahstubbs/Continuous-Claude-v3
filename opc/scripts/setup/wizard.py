@@ -22,11 +22,13 @@ from typing import Any
 
 try:
     from rich.console import Console
+    from rich.markup import escape as rich_escape
     from rich.panel import Panel
     from rich.prompt import Confirm, Prompt
 
     console = Console()
 except ImportError:
+    rich_escape = lambda x: x  # No escaping needed without Rich
     # Fallback for minimal environments
     class Console:
         def print(self, *args, **kwargs):
@@ -948,7 +950,7 @@ async def main():
         console.print("\n\n[yellow]Setup cancelled.[/yellow]")
         sys.exit(130)
     except Exception as e:
-        console.print(f"\n[red]Error: {e}[/red]")
+        console.print(f"\n[red]Error: {rich_escape(str(e))}[/red]")
         sys.exit(1)
 
 
