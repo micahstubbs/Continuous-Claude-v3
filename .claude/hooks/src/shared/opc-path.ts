@@ -17,6 +17,7 @@ import { join } from 'path';
  * 1. CLAUDE_OPC_DIR env var (for global hook installation)
  * 2. ${CLAUDE_PROJECT_DIR}/opc (for running within CC project)
  * 3. ${CWD}/opc (fallback)
+ * 4. ~/.claude (global installation - scripts at ~/.claude/scripts/)
  *
  * @returns Path to opc directory, or null if not found
  */
@@ -34,7 +35,18 @@ export function getOpcDir(): string | null {
     return localOpc;
   }
 
-  // 3. Not available
+  // 3. Try global ~/.claude (where wizard installs scripts)
+  // Scripts are at ~/.claude/scripts/core/, so we use ~/.claude as base
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+  if (homeDir) {
+    const globalClaude = join(homeDir, '.claude');
+    const globalScripts = join(globalClaude, 'scripts', 'core');
+    if (existsSync(globalScripts)) {
+      return globalClaude;
+    }
+  }
+
+  // 4. Not available
   return null;
 }
 
