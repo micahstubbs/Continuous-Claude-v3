@@ -14,9 +14,18 @@ The launcher:
 1. Finds the hook script:
    - .mjs in dist/ (compiled JavaScript)
    - .ts in src/ (TypeScript source)
-   - .py in root hooks dir (Python scripts)
-2. Uses appropriate interpreter (node, npx tsx, or python3)
+   - .py in root hooks dir (Python scripts with PEP 723 inline metadata)
+2. Uses appropriate interpreter:
+   - .mjs: node
+   - .ts: npx tsx
+   - .py: uv run (preferred) or python3 (fallback)
 3. Pipes stdin JSON and returns the hook's JSON output
+
+Python hooks should include PEP 723 inline script metadata for portability:
+    # /// script
+    # requires-python = ">=3.10"
+    # dependencies = ["httpx"]  # list any required packages
+    # ///
 
 Supports both project-specific hooks ($CLAUDE_PROJECT_DIR/.claude/hooks)
 and user-level hooks (~/.claude/hooks), with project hooks taking precedence.
@@ -111,8 +120,42 @@ def find_node() -> str | None:
     return None
 
 
+def find_uv() -> str | None:
+    """Find the uv executable.
+
+    Returns:
+        Path to uv executable, or None if not found
+    """
+    # Try common names
+    for name in ["uv", "uv.exe"]:
+        path = shutil.which(name)
+        if path:
+            return path
+
+    # On Windows, also check common install locations
+    if sys.platform == "win32":
+        common_paths = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "uv" / "uv.exe",
+            Path(os.environ.get("USERPROFILE", "")) / ".local" / "bin" / "uv.exe",
+        ]
+        for p in common_paths:
+            if p.exists():
+                return str(p)
+    else:
+        # On Unix, check ~/.local/bin and ~/.cargo/bin (common uv install locations)
+        common_paths = [
+            Path.home() / ".local" / "bin" / "uv",
+            Path.home() / ".cargo" / "bin" / "uv",
+        ]
+        for p in common_paths:
+            if p.exists():
+                return str(p)
+
+    return None
+
+
 def find_python() -> str | None:
-    """Find the Python executable.
+    """Find the Python executable (fallback if uv not available).
 
     Returns:
         Path to python executable, or None if not found
@@ -215,15 +258,20 @@ def run_hook(
 
     # Build command based on script type
     if script_path.suffix == ".py":
-        # Use Python for .py scripts
-        python_path = find_python()
-        if not python_path:
-            return {
-                "returncode": 1,
-                "stdout": "",
-                "stderr": "Error: Python not found. Please install Python 3.",
-            }
-        cmd = [python_path, str(script_path)]
+        # Prefer uv run for portable Python scripts (handles dependencies via PEP 723)
+        uv_path = find_uv()
+        if uv_path:
+            cmd = [uv_path, "run", str(script_path)]
+        else:
+            # Fallback to direct Python if uv not available
+            python_path = find_python()
+            if not python_path:
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "Error: Neither uv nor Python found. Please install uv (recommended) or Python 3.",
+                }
+            cmd = [python_path, str(script_path)]
     elif script_path.suffix == ".ts":
         # Use npx tsx for TypeScript
         cmd = ["npx", "tsx", str(script_path)]

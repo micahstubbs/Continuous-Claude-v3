@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """
 Session start hook: Warm tldr cache and build semantic index
 Cross-platform Python port of session-symbol-index.sh

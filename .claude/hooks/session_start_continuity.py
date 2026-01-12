@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """Session Start Continuity Hook (Python port).
 
 Loads YAML handoff context at session start. Injects full handoff (~400 tokens).

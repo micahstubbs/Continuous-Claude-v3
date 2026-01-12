@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """PreCompact Continuity Hook (Python port).
 
 Parses transcript and generates auto-handoff before context compaction.

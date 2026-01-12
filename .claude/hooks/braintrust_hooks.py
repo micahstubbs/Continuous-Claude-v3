@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["httpx"]
+# ///
 """Braintrust tracing hooks - Cross-platform Python port.
 
 Replaces the 5 bash hooks + common.sh:

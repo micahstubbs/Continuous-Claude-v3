@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """
 Post-tool-use hook that:
 1. Tracks edited files and their repos (Edit/Write tools)
