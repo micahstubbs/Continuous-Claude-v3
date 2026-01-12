@@ -234,11 +234,26 @@ def extract_memories(session_id: str, project_dir: str):
         jsonl_dir = Path.home() / ".claude" / "projects"
 
     # Look for session JSONL
+    # Session IDs may be truncated (s-mkb24ccg) while JSONL uses full UUIDs
+    # Strategy: Match by ID if possible, otherwise use most recent modified JSONL
     jsonl_path = None
-    for f in sorted(jsonl_dir.glob("*/*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True):
+    all_jsonls = sorted(jsonl_dir.glob("*/*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True)
+
+    # First try exact/partial match on session ID
+    for f in all_jsonls:
         if session_id in f.name or f.stem == session_id:
             jsonl_path = f
             break
+
+    # Fallback: Use most recent JSONL if no ID match (common with truncated IDs)
+    if not jsonl_path and all_jsonls:
+        # Use most recent JSONL modified in last 10 minutes (likely the stale session)
+        recent_threshold = datetime.now() - timedelta(minutes=10)
+        for f in all_jsonls:
+            if datetime.fromtimestamp(f.stat().st_mtime) > recent_threshold:
+                jsonl_path = f
+                log(f"Using recent JSONL {f.name} for session {session_id} (no ID match)")
+                break
 
     if not jsonl_path:
         log(f"No JSONL found for session {session_id}, skipping")
