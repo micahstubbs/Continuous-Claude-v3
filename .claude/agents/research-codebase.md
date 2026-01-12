@@ -1,3 +1,8 @@
+---
+name: research-codebase
+description: Documents codebase as-is using parallel sub-agents for comprehensive analysis
+---
+
 # Research Codebase Agent
 
 Document the codebase as-is without evaluation or recommendations.
