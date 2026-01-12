@@ -323,24 +323,35 @@ def generate_env_file(config: dict[str, Any], env_path: Path) -> None:
     # Database config
     db = config.get("database", {})
     if db:
-        host = db.get('host', 'localhost')
-        port = db.get('port', 5432)
-        database = db.get('database', 'continuous_claude')
-        user = db.get('user', 'claude')
-        password = db.get('password', '')
+        mode = db.get("mode", "docker")
+        lines.append(f"# Database Mode: {mode}")
 
-        lines.append("# PostgreSQL Configuration")
-        lines.append(f"POSTGRES_HOST={host}")
-        lines.append(f"POSTGRES_PORT={port}")
-        lines.append(f"POSTGRES_DB={database}")
-        lines.append(f"POSTGRES_USER={user}")
-        if password:
-            lines.append(f"POSTGRES_PASSWORD={password}")
-        lines.append("")
-
-        # DATABASE_URL for scripts (memory, artifacts, etc.)
-        lines.append("# Connection string for scripts")
-        lines.append(f"DATABASE_URL=postgresql://{user}:{password}@{host}:{port}/{database}")
+        if mode == "docker":
+            host = db.get('host', 'localhost')
+            port = db.get('port', 5432)
+            database = db.get('database', 'continuous_claude')
+            user = db.get('user', 'claude')
+            password = db.get('password', '')
+            lines.append(f"POSTGRES_HOST={host}")
+            lines.append(f"POSTGRES_PORT={port}")
+            lines.append(f"POSTGRES_DB={database}")
+            lines.append(f"POSTGRES_USER={user}")
+            if password:
+                lines.append(f"POSTGRES_PASSWORD={password}")
+            lines.append("")
+            lines.append("# Connection string for scripts")
+            lines.append(f"DATABASE_URL=postgresql://{user}:{password}@{host}:{port}/{database}")
+        elif mode == "embedded":
+            pgdata = db.get("pgdata", "")
+            venv = db.get("venv", "")
+            lines.append(f"PGSERVER_PGDATA={pgdata}")
+            lines.append(f"PGSERVER_VENV={venv}")
+            lines.append("")
+            lines.append("# Connection string (Unix socket)")
+            lines.append(f"DATABASE_URL=postgresql://postgres:@/postgres?host={pgdata}")
+        else:  # sqlite
+            lines.append("# SQLite mode - no DATABASE_URL needed")
+            lines.append("DATABASE_URL=")
         lines.append("")
 
     # API keys (only write non-empty keys)
@@ -420,19 +431,43 @@ async def run_setup_wizard() -> None:
 
     # Step 2: Database config
     console.print("\n[bold]Step 2/12: Database Configuration[/bold]")
-    console.print("  [dim]Customize host/port for containers (podman, nerdctl) or remote postgres.[/dim]")
-    if Confirm.ask("Configure database connection?", default=True):
-        db_config = await prompt_database_config()
-        password = Prompt.ask("Database password", password=True, default="claude_dev")
-        db_config["password"] = password
-    else:
-        db_config = {
-            "host": "localhost",
-            "port": 5432,
-            "database": "continuous_claude",
-            "user": "claude",
-            "password": "claude_dev",
-        }
+    console.print("  Choose your database backend:")
+    console.print("    [bold]docker[/bold]    - PostgreSQL in Docker (recommended)")
+    console.print("    [bold]embedded[/bold]  - Embedded PostgreSQL (no Docker needed)")
+    console.print("    [bold]sqlite[/bold]    - SQLite fallback (simplest, no cross-terminal)")
+    db_mode = Prompt.ask("\n  Database mode", choices=["docker", "embedded", "sqlite"], default="docker")
+
+    if db_mode == "embedded":
+        from scripts.setup.embedded_postgres import setup_embedded_environment
+        console.print("  Setting up embedded postgres (creates Python 3.12 environment)...")
+        embed_result = await setup_embedded_environment()
+        if embed_result["success"]:
+            console.print(f"  [green]OK[/green] Embedded environment ready at {embed_result['venv']}")
+            db_config = {"mode": "embedded", "pgdata": str(embed_result["pgdata"]), "venv": str(embed_result["venv"])}
+        else:
+            console.print(f"  [red]ERROR[/red] {embed_result.get('error', 'Unknown')}")
+            console.print("  Falling back to Docker mode")
+            db_mode = "docker"
+
+    if db_mode == "sqlite":
+        db_config = {"mode": "sqlite"}
+        console.print("  [yellow]Note:[/yellow] Cross-terminal coordination disabled in SQLite mode")
+
+    if db_mode == "docker":
+        console.print("  [dim]Customize host/port for containers (podman, nerdctl) or remote postgres.[/dim]")
+        if Confirm.ask("Configure database connection?", default=True):
+            db_config = await prompt_database_config()
+            password = Prompt.ask("Database password", password=True, default="claude_dev")
+            db_config["password"] = password
+        else:
+            db_config = {
+                "host": "localhost",
+                "port": 5432,
+                "database": "continuous_claude",
+                "user": "claude",
+                "password": "claude_dev",
+            }
+        db_config["mode"] = "docker"
 
     # Step 3: API keys
     console.print("\n[bold]Step 3/12: API Keys (Optional)[/bold]")
