@@ -21,6 +21,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# Ensure project root is in sys.path for imports when run as a script
+# This handles both `python -m scripts.setup.wizard` and `python scripts/setup/wizard.py`
+_this_file = Path(__file__).resolve()
+_project_root = _this_file.parent.parent.parent  # scripts/setup/wizard.py -> opc/
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 try:
     from rich.console import Console
     from rich.markup import escape as rich_escape
@@ -161,6 +168,23 @@ async def check_prerequisites_with_install_offers() -> dict[str, Any]:
     elif not docker_info.get("daemon_running", False):
         console.print("  [yellow]Docker is installed but the daemon is not running.[/yellow]")
         console.print("  Please start Docker Desktop or the Docker service.")
+
+        # Retry loop for daemon startup
+        max_retries = 3
+        for attempt in range(max_retries):
+            if Confirm.ask(f"\n  Retry checking Docker daemon? (attempt {attempt + 1}/{max_retries})", default=True):
+                console.print("  Checking Docker daemon...")
+                await asyncio.sleep(2)  # Give daemon time to start
+                docker_info = await check_docker_installed()
+                if docker_info.get("daemon_running", False):
+                    result["docker"] = True
+                    result["docker_daemon_running"] = True
+                    console.print("  [green]OK[/green] Docker daemon is now running!")
+                    break
+                else:
+                    console.print("  [yellow]Docker daemon still not running.[/yellow]")
+            else:
+                break
 
     # Check elan/Lean4 (optional, for theorem proving with /prove skill)
     if not result["elan"]:
@@ -433,6 +457,7 @@ async def run_setup_wizard() -> None:
     if Confirm.ask("Start Docker stack (PostgreSQL, Redis)?", default=True):
         from scripts.setup.docker_setup import run_migrations, start_docker_stack, wait_for_services
 
+        console.print("  [dim]First run downloads ~500MB, may take a few minutes...[/dim]")
         result = await start_docker_stack()
         if result["success"]:
             console.print("  [green]OK[/green] Docker stack started")
