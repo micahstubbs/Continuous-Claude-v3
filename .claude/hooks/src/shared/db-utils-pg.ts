@@ -13,8 +13,8 @@
  */
 
 import { spawnSync } from 'child_process';
-import { join } from 'path';
 import type { QueryResult } from './types.js';
+import { requireOpcDir } from './opc-path.js';
 
 // Re-export SAFE_ID_PATTERN and isValidId from pattern-router for convenience
 export { SAFE_ID_PATTERN, isValidId } from './pattern-router.js';
@@ -44,8 +44,7 @@ export function getPgConnectionString(): string {
  * @returns QueryResult with success, stdout, and stderr
  */
 export function runPgQuery(pythonCode: string, args: string[] = []): QueryResult {
-  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const opcDir = join(projectDir, 'opc');
+  const opcDir = requireOpcDir();
 
   // Wrap the Python code to use asyncio.run() for async queries
   const wrappedCode = `

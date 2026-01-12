@@ -13,7 +13,7 @@
 
 import { readFileSync, existsSync, appendFileSync } from 'fs';
 import { spawnSync } from 'child_process';
-import { join } from 'path';
+import { getOpcDir } from './shared/opc-path.js';
 import { containsPromptInjection, detectPromptInjection } from './shared/security-utils.js';
 import {
   createProvenance,
@@ -147,7 +147,8 @@ function logSecurityEvent(projectDir: string, event: Record<string, unknown>): v
 function checkMemoryRelevance(intent: string, projectDir: string): MemoryMatch | null {
   if (!intent || intent.length < 3) return null;
 
-  const opcDir = join(projectDir, 'opc');
+  const opcDir = getOpcDir();
+  if (!opcDir) return null;  // Graceful degradation if OPC not available
 
   // PostgreSQL full-text search handles stopwords automatically via plainto_tsquery
   // Just clean up the intent: remove paths, underscores, short words

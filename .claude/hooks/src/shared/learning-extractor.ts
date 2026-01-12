@@ -6,7 +6,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { join } from 'path';
+import { getOpcDir } from './opc-path.js';
 
 export interface Learning {
   what: string;      // What happened
@@ -34,7 +34,8 @@ export async function storeLearning(
   sessionId: string,
   projectDir: string
 ): Promise<boolean> {
-  const opcDir = join(projectDir, 'opc');
+  const opcDir = getOpcDir();
+  if (!opcDir) return false;  // Graceful degradation
 
   // Build args based on outcome
   const args = [
