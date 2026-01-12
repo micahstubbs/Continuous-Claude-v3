@@ -29,6 +29,7 @@ export { SAFE_ID_PATTERN, isValidId } from './pattern-router.js';
  */
 export function getPgConnectionString(): string {
   return process.env.OPC_POSTGRES_URL ||
+    process.env.DATABASE_URL ||
     'postgresql://claude:claude_dev@localhost:5432/continuous_claude';
 }
 
