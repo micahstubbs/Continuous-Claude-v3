@@ -31,8 +31,22 @@ interface CacheStatus {
   };
 }
 
+interface SemanticIndexStatus {
+  exists: boolean;
+  path: string;
+}
+
 function readStdin(): string {
   return readFileSync(0, 'utf-8');
+}
+
+function getSemanticIndexStatus(projectDir: string): SemanticIndexStatus {
+  // Check for FAISS index at .tldr/cache/semantic/index.faiss
+  const indexPath = join(projectDir, '.tldr', 'cache', 'semantic', 'index.faiss');
+  return {
+    exists: existsSync(indexPath),
+    path: indexPath
+  };
 }
 
 function getCacheStatus(projectDir: string): CacheStatus {
@@ -120,9 +134,15 @@ async function main() {
     ? ' ⚠️ STALE'
     : '';
 
+  // Check semantic index
+  const semantic = getSemanticIndexStatus(projectDir);
+  const semanticWarning = semantic.exists
+    ? ''
+    : '\n⚠️ No semantic index found. Run `tldr semantic index .` for AI-powered code search.';
+
   // Emit system message - don't load full JSON, just notify availability
   const cacheInfo = cache.exists ? `${available.join(', ')}` : 'building...';
-  const message = `📊 TLDR cache${ageStr}${freshness}${warmStatus}: ${cacheInfo}. Query with: cat .claude/cache/tldr/<file>.json | jq`;
+  const message = `📊 TLDR cache${ageStr}${freshness}${warmStatus}: ${cacheInfo}${semanticWarning}`;
 
   // Output as system reminder (not full context injection)
   console.log(message);

@@ -136,7 +136,6 @@ opc/src/
 opc/spec/
 opc/packages/
 opc/migrations/
-opc/pyproject.toml
 opc/uv.lock
 opc/README.md
 opc/LICENSE
