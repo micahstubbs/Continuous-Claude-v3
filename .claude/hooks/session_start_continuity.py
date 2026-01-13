@@ -242,7 +242,7 @@ def ensure_memory_daemon() -> str | None:
 
         if daemon_script:
             subprocess.Popen(
-                ["uv", "run", "python", str(daemon_script), "start"],
+                ["uv", "run", str(daemon_script), "start"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 cwd=str(daemon_script.parent.parent.parent),  # opc/ dir

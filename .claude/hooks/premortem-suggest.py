@@ -13,8 +13,8 @@ Behavior:
 - Non-blocking (suggestive only)
 
 Cross-platform:
-- macOS/Linux: Called via `python3` in settings.json
-- Windows: Change settings.json to use `py -3` or `python` instead
+- All platforms: Called via `uv run` through hook_launcher.py
+- Fallback: If uv not available, uses python3 (or python on Windows)
 
 Uses only standard library - no dependencies.
 """

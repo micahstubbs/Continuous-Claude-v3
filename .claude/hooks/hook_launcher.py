@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """Cross-platform hook launcher for Claude Code hooks.
 
 Replaces bash wrapper scripts (.sh) with a Python launcher that works
