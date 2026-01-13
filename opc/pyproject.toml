@@ -79,7 +79,7 @@ mcp-exec = "runtime.harness:main"
 mcp-generate = "runtime.generate_wrappers:main"
 mcp-generate-discovery = "runtime.generate_test_params:main"
 mcp-discover = "runtime.discover_schemas:main"
-opc = "scripts.opc_cli:main"
+# SECURITY: Removed orphaned 'opc' entry (F1 mitigation - import-path hijack prevention)
 
 [build-system]
 requires = ["hatchling"]
