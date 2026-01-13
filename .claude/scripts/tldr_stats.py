@@ -153,7 +153,8 @@ def get_claude_stats(session_id: str) -> dict:
 def get_model_breakdown(session_id: str) -> dict:
     """Get per-model token breakdown from session JSONL."""
     model_breakdown = {}
-    projects_base = Path.home() / '.opc-dev' / 'projects'
+    config_dir = Path(os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude')))
+    projects_base = config_dir / 'projects'
 
     if not projects_base.exists():
         return {}
