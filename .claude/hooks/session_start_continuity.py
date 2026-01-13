@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -104,16 +105,17 @@ def ensure_tldr_daemon() -> str:
     socket_path = _compute_socket_path(project_dir) if port is None else None
 
     # Set env vars for all hooks
+    # SECURITY: Use shlex.quote() to prevent shell injection (F1 mitigation)
     if env_file:
         try:
             with open(env_file, "a") as f:
                 if socket_path:
-                    f.write(f'export TLDR_DAEMON_SOCKET="{socket_path}"\n')
+                    f.write(f'export TLDR_DAEMON_SOCKET={shlex.quote(str(socket_path))}\n')
                 else:
                     # Windows: store host:port
-                    f.write(f'export TLDR_DAEMON_HOST="{addr}"\n')
-                    f.write(f'export TLDR_DAEMON_PORT="{port}"\n')
-                f.write(f'export TLDR_PROJECT_DIR="{project_dir}"\n')
+                    f.write(f'export TLDR_DAEMON_HOST={shlex.quote(str(addr))}\n')
+                    f.write(f'export TLDR_DAEMON_PORT={shlex.quote(str(port))}\n')
+                f.write(f'export TLDR_PROJECT_DIR={shlex.quote(str(project_dir))}\n')
         except Exception as e:
             print(f"Warning: Failed to write TLDR env vars: {e}", file=sys.stderr)
 
@@ -538,6 +540,9 @@ def get_unmarked_handoffs() -> list[dict[str, Any]]:
 def write_session_env_vars(session_id: str, transcript_path: str) -> None:
     """Write session info to CLAUDE_ENV_FILE for later use by memory extractor.
 
+    SECURITY: Values are escaped with shlex.quote() to prevent injection when
+    the env file is sourced by shell scripts. (F1 mitigation - CVSS 7.1)
+
     Args:
         session_id: The current session ID
         transcript_path: Path to the session JSONL transcript
@@ -545,10 +550,17 @@ def write_session_env_vars(session_id: str, transcript_path: str) -> None:
     env_file = os.environ.get("CLAUDE_ENV_FILE")
     if env_file and session_id:
         try:
+            # SECURITY: Sanitize session_id - allow only safe characters
+            safe_session_id = re.sub(r'[^A-Za-z0-9_-]', '', session_id)[:64]
+            if not safe_session_id:
+                return  # Reject completely invalid session IDs
+
             with open(env_file, "a") as f:
-                f.write(f"CURRENT_SESSION_ID={session_id}\n")
+                # SECURITY: Use shlex.quote to prevent shell injection
+                f.write(f"CURRENT_SESSION_ID={shlex.quote(safe_session_id)}\n")
                 if transcript_path:
-                    f.write(f"CURRENT_JSONL_PATH={transcript_path}\n")
+                    # SECURITY: Quote path to prevent injection via special chars
+                    f.write(f"CURRENT_JSONL_PATH={shlex.quote(transcript_path)}\n")
         except Exception as e:
             print(f"Warning: Failed to write session env vars: {e}", file=sys.stderr)
 
