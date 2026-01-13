@@ -58,8 +58,9 @@ const SAFE_SESSION_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 /**
  * Control characters that should be stripped from YAML values.
+ * Includes Unicode line separators (NEL, LS, PS) that could bypass newline stripping.
  */
-const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x85\u2028\u2029]/g;
 
 // =============================================================================
 // Core Escaping Functions
@@ -126,7 +127,8 @@ export function escapeYamlScalar(
     escaped === 'on' ||
     escaped === 'off' ||
     /^-?\d+(\.\d+)?$/.test(escaped) || // Numbers
-    /^0[xXoObB]/.test(escaped); // Hex/octal/binary
+    /^0[xXoObB]/.test(escaped) || // Hex/octal/binary
+    /^[-?](\s|$)/.test(escaped); // YAML sequence/key indicators at start
 
   if (needsQuoting) {
     // Use double quotes and escape internal quotes and backslashes

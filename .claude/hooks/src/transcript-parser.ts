@@ -307,11 +307,12 @@ export function generateAutoHandoff(summary: TranscriptSummary, sessionName: str
   lines.push(`  - files_modified: "${summary.filesModified.length} files changed"`);
   lines.push('');
 
-  // Worked/Failed
+  // Worked/Failed - Security: Use escapeYamlListItem for tool names (codex audit fix)
   lines.push('worked:');
   const successfulTools = summary.recentToolCalls.filter(t => t.success);
   if (successfulTools.length > 0) {
-    lines.push(`  - "${successfulTools.map(t => t.name).join(', ')} completed successfully"`);
+    const toolNames = successfulTools.map(t => t.name).join(', ');
+    lines.push(`  - ${escapeYamlListItem(`${toolNames} completed successfully`)}`);
   } else {
     lines.push('  []');
   }
@@ -320,7 +321,8 @@ export function generateAutoHandoff(summary: TranscriptSummary, sessionName: str
   lines.push('failed:');
   const failedTools = summary.recentToolCalls.filter(t => !t.success);
   if (failedTools.length > 0) {
-    lines.push(`  - "${failedTools.map(t => t.name).join(', ')} encountered errors"`);
+    const toolNames = failedTools.map(t => t.name).join(', ');
+    lines.push(`  - ${escapeYamlListItem(`${toolNames} encountered errors`)}`);
   } else {
     lines.push('  []');
   }
