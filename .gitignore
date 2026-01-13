@@ -130,9 +130,12 @@ opc/docker-compose.memory.yml
 
 # OPC dev-only (not needed for wizard install)
 opc/.github/
-opc/tests/
+opc/tests/*
+!opc/tests/security/
 opc/docs/
-opc/src/
+opc/src/*
+!opc/src/security/
+!opc/src/runtime/
 opc/spec/
 opc/packages/
 opc/migrations/
