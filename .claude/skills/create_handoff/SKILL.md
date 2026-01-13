@@ -38,43 +38,46 @@ The `goal:` and `now:` fields are shown in the statusline - they MUST be named e
 
 ```yaml
 ---
-session: {session-name from ledger}
+session: my-session-name
 date: YYYY-MM-DD
 status: complete|partial|blocked
 outcome: SUCCEEDED|PARTIAL_PLUS|PARTIAL_MINUS|FAILED
 ---
 
-goal: {What this session accomplished - shown in statusline}
-now: {What next session should do first - shown in statusline}
-test: {Command to verify this work, e.g., pytest tests/test_foo.py}
+# IMPORTANT: Quote values containing :, #, [], {}, or special characters
+goal: "What this session accomplished - shown in statusline"
+now: "What next session should do first - shown in statusline"
+test: "pytest tests/test_foo.py"
 
 done_this_session:
-  - task: {First completed task}
-    files: [{file1.py}, {file2.py}]
-  - task: {Second completed task}
-    files: [{file3.py}]
+  - task: "First completed task"
+    files: ["file1.py", "file2.py"]
+  - task: "Second completed task"
+    files: ["file3.py"]
 
-blockers: [{any blocking issues}]
+blockers: ["any blocking issues"]
 
-questions: [{unresolved questions for next session}]
+questions: ["unresolved questions for next session"]
 
 decisions:
-  - {decision_name}: {rationale}
+  - auto_compact: "Context limit reached, auto-compacted"
 
 findings:
-  - {key_finding}: {details}
+  - tool_calls: "15 recent tool calls"
 
-worked: [{approaches that worked}]
-failed: [{approaches that failed and why}]
+worked: ["approaches that worked"]
+failed: ["approaches that failed and why"]
 
 next:
-  - {First next step}
-  - {Second next step}
+  - "First next step"
+  - "Second next step"
 
 files:
-  created: [{new files}]
-  modified: [{changed files}]
+  created: ["new_file.py"]
+  modified: ["changed_file.py"]
 ```
+
+> **Security:** Always quote string values to prevent YAML injection. Values with colons, newlines, or special characters can break the YAML structure if unquoted.
 
 **Field guide:**
 - `goal:` + `now:` - REQUIRED, shown in statusline
