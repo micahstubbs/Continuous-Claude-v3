@@ -8,10 +8,14 @@
  * - Provides compiler feedback + AI suggestions to Claude
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
+import {
+  safeWriteStateFileSync,
+  sanitizeSessionId,
+} from './shared/secure-temp.js';
 
 // LMStudio endpoint for Goedel-Prover-V2-8B
 const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_BASE_URL || 'http://127.0.0.1:1234';
@@ -59,13 +63,25 @@ function readStdin(): string {
 
 function ensureStateDir(): void {
   if (!existsSync(STATE_DIR)) {
-    mkdirSync(STATE_DIR, { recursive: true });
+    // SECURITY: Create directory with 0700 permissions (F3 mitigation)
+    mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  } else {
+    // Ensure existing directory has correct permissions
+    try {
+      chmodSync(STATE_DIR, 0o700);
+    } catch {
+      // May fail if not owner, continue anyway
+    }
   }
 }
 
 function saveState(state: CompilerState): void {
   ensureStateDir();
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  // SECURITY: Use symlink-safe write (F1 mitigation)
+  const success = safeWriteStateFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  if (!success) {
+    console.error('Failed to save compiler state securely');
+  }
 }
 
 function runLeanCompiler(filePath: string, cwd: string): { success: boolean; output: string; sorries: string[] } {

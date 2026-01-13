@@ -15,6 +15,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { sanitizeSessionId, safeReadStateFileSync } from './secure-temp.js';
 
 // =============================================================================
 // Types
@@ -74,11 +75,15 @@ export function getSessionId(): string {
 /**
  * Get the path to the resource state JSON file.
  *
+ * SECURITY: Session ID is sanitized to prevent path injection (F4 mitigation)
+ *
  * @param sessionId - Session ID to use in the filename
  * @returns Path to {tmpdir}/claude-resources-{sessionId}.json
  */
 export function getResourceFilePath(sessionId: string): string {
-  return join(tmpdir(), `claude-resources-${sessionId}.json`);
+  // SECURITY: Sanitize session ID to prevent path injection
+  const safeSessionId = sanitizeSessionId(sessionId);
+  return join(tmpdir(), `claude-resources-${safeSessionId}.json`);
 }
 
 /**
@@ -107,13 +112,12 @@ export function readResourceState(): ResourceState | null {
   const sessionId = getSessionId();
   const resourceFile = getResourceFilePath(sessionId);
 
-  // Return null if file doesn't exist
-  if (!existsSync(resourceFile)) {
-    return null;
-  }
-
   try {
-    const content = readFileSync(resourceFile, 'utf-8');
+    // SECURITY: Use symlink-safe read (F1/F2 mitigation)
+    const content = safeReadStateFileSync(resourceFile);
+    if (!content) {
+      return null;
+    }
     const data = JSON.parse(content);
 
     // Merge with defaults to handle missing fields

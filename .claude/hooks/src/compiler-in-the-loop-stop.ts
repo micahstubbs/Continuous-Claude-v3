@@ -8,6 +8,7 @@
 import { readFileSync, existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { safeReadStateFileSync } from './shared/secure-temp.js';
 
 interface StopHookInput {
   session_id: string;
@@ -39,14 +40,16 @@ function readStdin(): string {
 }
 
 function loadState(): CompilerState | null {
-  if (!existsSync(STATE_FILE)) return null;
+  // SECURITY: Use symlink-safe read (F1 mitigation)
+  const content = safeReadStateFileSync(STATE_FILE);
+  if (!content) return null;
 
   try {
-    const state: CompilerState = JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
+    const state: CompilerState = JSON.parse(content);
 
     // Check if state is stale
     if (Date.now() - state.timestamp > MAX_STATE_AGE_MS) {
-      unlinkSync(STATE_FILE);
+      try { unlinkSync(STATE_FILE); } catch {}
       return null;
     }
 
