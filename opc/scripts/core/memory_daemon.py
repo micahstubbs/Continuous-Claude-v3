@@ -37,6 +37,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# SECURITY: Import secure file discovery for symlink-safe JSONL lookup (F2 mitigation)
+from secure_file_discovery import find_recent_jsonl, secure_glob_jsonl
+
 # Load .env files for DATABASE_URL (cross-platform)
 # 1. Global ~/.claude/.env (API keys, may have DB config)
 global_env = Path.home() / ".claude" / ".env"
@@ -236,8 +239,17 @@ def extract_memories(session_id: str, project_dir: str):
     # Look for session JSONL
     # Session IDs may be truncated (s-mkb24ccg) while JSONL uses full UUIDs
     # Strategy: Match by ID if possible, otherwise use most recent modified JSONL
+    #
+    # SECURITY: Use secure_glob_jsonl instead of raw glob to reject symlinks
+    # and validate paths stay within jsonl_dir (F2: Symlink/Path Escape mitigation)
     jsonl_path = None
-    all_jsonls = sorted(jsonl_dir.glob("*/*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True)
+    all_jsonls = list(secure_glob_jsonl(
+        jsonl_dir,
+        pattern="*/*.jsonl",
+        reject_symlinks=True,  # SECURITY: Prevent symlink-based path escape
+        sort_key=lambda x: x.stat().st_mtime,
+        reverse=True
+    ))
 
     # First try exact/partial match on session ID
     for f in all_jsonls:
@@ -246,14 +258,17 @@ def extract_memories(session_id: str, project_dir: str):
             break
 
     # Fallback: Use most recent JSONL if no ID match (common with truncated IDs)
-    if not jsonl_path and all_jsonls:
-        # Use most recent JSONL modified in last 10 minutes (likely the stale session)
-        recent_threshold = datetime.now() - timedelta(minutes=10)
-        for f in all_jsonls:
-            if datetime.fromtimestamp(f.stat().st_mtime) > recent_threshold:
-                jsonl_path = f
-                log(f"Using recent JSONL {f.name} for session {session_id} (no ID match)")
-                break
+    # SECURITY: Use find_recent_jsonl which includes symlink rejection
+    if not jsonl_path:
+        recent_jsonl = find_recent_jsonl(
+            jsonl_dir,
+            max_age_seconds=600,  # 10 minutes
+            session_id=session_id,
+            match_mode="contains"  # Legacy compatibility with truncated IDs
+        )
+        if recent_jsonl:
+            jsonl_path = recent_jsonl
+            log(f"Using recent JSONL {recent_jsonl.name} for session {session_id} (no ID match)")
 
     if not jsonl_path:
         log(f"No JSONL found for session {session_id}, skipping")
