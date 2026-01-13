@@ -13,6 +13,9 @@ import { readFileSync, existsSync } from 'fs';
 import { basename, extname } from 'path';
 import { queryDaemonSync, DaemonResponse } from './daemon-client';
 
+// SECURITY FIX: Import path validation for F3 (Path Traversal) mitigation
+import { validateTLDRPath } from './shared/secure-path-validator.js';
+
 // Search context from smart-search-router
 interface SearchContext {
   timestamp: number;
@@ -372,6 +375,24 @@ async function main() {
   }
 
   const filePath = input.tool_input.file_path || '';
+
+  // SECURITY FIX: Validate file path to prevent path traversal (F3)
+  // Only validate if CLAUDE_PROJECT_DIR is set (otherwise skip validation gracefully)
+  if (process.env.CLAUDE_PROJECT_DIR) {
+    const pathValidation = validateTLDRPath(filePath);
+    if (!pathValidation.valid) {
+      // Path validation failed - block with security message
+      const output: HookOutput = {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: `🔒 Path validation failed: ${pathValidation.error}`,
+        }
+      };
+      console.log(JSON.stringify(output));
+      return;
+    }
+  }
 
   // Allow non-code files
   if (!isCodeFile(filePath)) {

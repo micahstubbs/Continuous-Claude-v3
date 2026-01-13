@@ -309,27 +309,37 @@ function isDaemonReachable(projectDir: string): boolean {
       // Process exists - socket might just be busy, don't delete it
       // Try a quick ping but don't delete socket on failure
       try {
-        execSync(`echo '{"cmd":"ping"}' | nc -U "${connInfo.path}"`, {
+        // SECURITY FIX: Use spawnSync with stdin instead of shell interpolation
+        const pingResult = spawnSync('nc', ['-U', connInfo.path!], {
+          input: '{"cmd":"ping"}\n',
           encoding: 'utf-8',
-          timeout: 1000,  // Increased from 500ms
+          timeout: 1000,
           stdio: ['pipe', 'pipe', 'pipe'],
         });
-        return true;
+        if (pingResult.status === 0) {
+          return true;
+        }
       } catch {
         // Ping failed but process exists - daemon is starting or busy
         // Return true to prevent spawning duplicates
         return true;
       }
+      return true;  // Process exists, daemon likely starting
     }
 
     // No daemon process running - try ping to verify socket isn't stale
     try {
-      execSync(`echo '{"cmd":"ping"}' | nc -U "${connInfo.path}"`, {
+      // SECURITY FIX: Use spawnSync with stdin instead of shell interpolation
+      const pingResult = spawnSync('nc', ['-U', connInfo.path!], {
+        input: '{"cmd":"ping"}\n',
         encoding: 'utf-8',
         timeout: 500,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      return true;
+      if (pingResult.status === 0) {
+        return true;
+      }
+      throw new Error('ping failed');
     } catch {
       // Connection failed AND no daemon process - socket is stale, safe to remove
       try {
@@ -561,29 +571,47 @@ export function queryDaemonSync(query: DaemonQuery, projectDir: string): DaemonR
 
     if (connInfo.type === 'tcp') {
       // Windows: Use PowerShell to communicate with TCP socket
-      const psCommand = `
-        $client = New-Object System.Net.Sockets.TcpClient('${connInfo.host}', ${connInfo.port})
-        $stream = $client.GetStream()
-        $writer = New-Object System.IO.StreamWriter($stream)
-        $reader = New-Object System.IO.StreamReader($stream)
-        $writer.WriteLine('${input.replace(/'/g, "''")}')
-        $writer.Flush()
-        $response = $reader.ReadLine()
-        $client.Close()
-        Write-Output $response
-      `.trim();
+      // SECURITY FIX: Use spawnSync with script via stdin to avoid command injection
+      const psScript = `
+$ErrorActionPreference = "Stop"
+$inputData = [Console]::In.ReadLine()
+$client = New-Object System.Net.Sockets.TcpClient
+$client.Connect('${connInfo.host}', ${connInfo.port})
+$stream = $client.GetStream()
+$writer = New-Object System.IO.StreamWriter($stream)
+$reader = New-Object System.IO.StreamReader($stream)
+$writer.WriteLine($inputData)
+$writer.Flush()
+$response = $reader.ReadLine()
+$client.Close()
+Write-Output $response
+`.trim();
 
-      result = execSync(`powershell -Command "${psCommand.replace(/"/g, '\\"')}"`, {
+      const psResult = spawnSync('powershell', ['-NoProfile', '-Command', '-'], {
+        input: psScript + '\n' + input + '\n',
         encoding: 'utf-8',
         timeout: QUERY_TIMEOUT,
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
+
+      if (psResult.status !== 0) {
+        throw new Error(psResult.stderr || 'PowerShell command failed');
+      }
+      result = psResult.stdout;
     } else {
       // Unix: Use nc (netcat) to communicate with Unix socket
-      // echo '{"cmd":"ping"}' | nc -U /tmp/tldr-xxx.sock
-      result = execSync(`echo '${input}' | nc -U "${connInfo.path}"`, {
+      // SECURITY FIX: Use spawnSync with stdin instead of shell interpolation
+      const ncResult = spawnSync('nc', ['-U', connInfo.path!], {
+        input: input + '\n',
         encoding: 'utf-8',
         timeout: QUERY_TIMEOUT,
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
+
+      if (ncResult.status !== 0 && ncResult.status !== null) {
+        throw new Error(ncResult.stderr || 'nc command failed');
+      }
+      result = ncResult.stdout;
     }
 
     return JSON.parse(result.trim());
