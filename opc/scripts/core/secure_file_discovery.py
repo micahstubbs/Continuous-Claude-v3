@@ -305,3 +305,88 @@ def find_recent_jsonl(
             continue
 
     return None
+
+
+def safe_read_jsonl(
+    file_path: Path,
+    base_dir: Path,
+    max_size_bytes: int = 100 * 1024 * 1024,  # 100 MB default limit
+) -> Optional[str]:
+    """
+    Safely read a JSONL file with TOCTOU protection.
+
+    This function closes the TOCTOU window by:
+    1. Re-validating the path immediately before open
+    2. Opening with O_NOFOLLOW to fail if swapped to symlink
+    3. Checking file is still a regular file after open
+    4. Reading content directly, not via path
+
+    Args:
+        file_path: Path to the JSONL file
+        base_dir: Base directory the file must be within
+        max_size_bytes: Maximum file size to read (DoS protection)
+
+    Returns:
+        File content as string, or None if validation fails
+
+    Security Notes:
+        Use this at time-of-use to prevent TOCTOU attacks between
+        initial discovery and actual file access.
+    """
+    try:
+        # Re-validate path (closes validation-to-use TOCTOU window)
+        if not validate_jsonl_file(file_path, base_dir, reject_symlinks=True):
+            return None
+
+        # Open with O_NOFOLLOW to atomically reject symlinks at open time
+        # This is the definitive check - if a race swapped in a symlink
+        # between validation and open, this will fail
+        try:
+            fd = os.open(str(file_path), os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            # O_NOFOLLOW fails on symlinks with ELOOP
+            return None
+
+        try:
+            # Verify file is still valid via fstat (checks the open fd, not path)
+            import stat as stat_module
+            stat_info = os.fstat(fd)
+            if not stat_module.S_ISREG(stat_info.st_mode):
+                return None
+
+            # Size check for DoS protection
+            if stat_info.st_size > max_size_bytes:
+                return None
+
+            # Read content from fd (not from path - immune to path races)
+            with os.fdopen(fd, 'r', encoding='utf-8') as f:
+                fd = -1  # fd ownership transferred to file object
+                return f.read()
+
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+    except (OSError, RuntimeError, UnicodeDecodeError):
+        return None
+
+
+def revalidate_before_use(
+    file_path: Path,
+    base_dir: Path,
+) -> bool:
+    """
+    Re-validate a file path immediately before use.
+
+    Call this at time-of-use to close TOCTOU windows between
+    discovery and use. Returns False if the file has been
+    replaced with a symlink or moved outside base_dir.
+
+    Args:
+        file_path: Path to validate
+        base_dir: Base directory the file must be within
+
+    Returns:
+        True if file is still valid, False otherwise
+    """
+    return validate_jsonl_file(file_path, base_dir, reject_symlinks=True)

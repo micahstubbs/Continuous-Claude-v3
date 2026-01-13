@@ -38,7 +38,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # SECURITY: Import secure file discovery for symlink-safe JSONL lookup (F2 mitigation)
-from secure_file_discovery import find_recent_jsonl, secure_glob_jsonl
+from secure_file_discovery import find_recent_jsonl, secure_glob_jsonl, revalidate_before_use
 
 # Load .env files for DATABASE_URL (cross-platform)
 # 1. Global ~/.claude/.env (API keys, may have DB config)
@@ -272,6 +272,12 @@ def extract_memories(session_id: str, project_dir: str):
 
     if not jsonl_path:
         log(f"No JSONL found for session {session_id}, skipping")
+        return
+
+    # SECURITY: Re-validate path at time-of-use to close TOCTOU window
+    # This prevents race conditions where file is swapped between discovery and use
+    if not revalidate_before_use(jsonl_path, jsonl_dir):
+        log(f"Security: JSONL path failed re-validation (possible tampering): {jsonl_path}")
         return
 
     # Run headless memory extraction

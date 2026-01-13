@@ -23,6 +23,8 @@ from secure_file_discovery import (
     secure_glob_jsonl,
     find_session_jsonl,
     find_recent_jsonl,
+    safe_read_jsonl,
+    revalidate_before_use,
 )
 
 
@@ -467,6 +469,124 @@ class TestPathTraversalAttacks(TestCase):
         finally:
             if outside_file.exists():
                 outside_file.unlink()
+
+
+class TestSafeReadJsonl(TestCase):
+    """Tests for safe_read_jsonl function (TOCTOU protection)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.base_dir = Path(self.temp_dir) / "base"
+        self.base_dir.mkdir()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_reads_valid_file(self):
+        """Should read valid JSONL file content."""
+        subdir = self.base_dir / "project"
+        subdir.mkdir()
+        test_file = subdir / "test.jsonl"
+        test_content = '{"valid": true}\n{"second": "line"}'
+        test_file.write_text(test_content)
+
+        result = safe_read_jsonl(test_file, self.base_dir)
+        self.assertEqual(result, test_content)
+
+    def test_rejects_symlink(self):
+        """Should reject symlinked files."""
+        subdir = self.base_dir / "project"
+        subdir.mkdir()
+        real_file = subdir / "real.jsonl"
+        real_file.write_text('{}')
+        symlink = subdir / "link.jsonl"
+        symlink.symlink_to(real_file)
+
+        result = safe_read_jsonl(symlink, self.base_dir)
+        self.assertIsNone(result)
+
+    def test_rejects_file_outside_base(self):
+        """Should reject files outside base directory."""
+        outside_file = Path(self.temp_dir) / "secret.jsonl"
+        outside_file.write_text('{"secret": true}')
+
+        result = safe_read_jsonl(outside_file, self.base_dir)
+        self.assertIsNone(result)
+
+    def test_rejects_large_files(self):
+        """Should reject files exceeding size limit."""
+        subdir = self.base_dir / "project"
+        subdir.mkdir()
+        large_file = subdir / "large.jsonl"
+        large_file.write_text('x' * 1000)  # 1000 bytes
+
+        result = safe_read_jsonl(large_file, self.base_dir, max_size_bytes=100)
+        self.assertIsNone(result)
+
+    def test_returns_none_for_nonexistent(self):
+        """Should return None for nonexistent files."""
+        missing_file = self.base_dir / "project" / "missing.jsonl"
+        result = safe_read_jsonl(missing_file, self.base_dir)
+        self.assertIsNone(result)
+
+
+class TestRevalidateBeforeUse(TestCase):
+    """Tests for revalidate_before_use function."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.base_dir = Path(self.temp_dir) / "base"
+        self.base_dir.mkdir()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_valid_file_passes(self):
+        """Valid file should pass re-validation."""
+        subdir = self.base_dir / "project"
+        subdir.mkdir()
+        test_file = subdir / "test.jsonl"
+        test_file.write_text('{}')
+
+        self.assertTrue(revalidate_before_use(test_file, self.base_dir))
+
+    def test_symlink_fails(self):
+        """Symlink should fail re-validation."""
+        subdir = self.base_dir / "project"
+        subdir.mkdir()
+        real_file = subdir / "real.jsonl"
+        real_file.write_text('{}')
+        symlink = subdir / "link.jsonl"
+        symlink.symlink_to(real_file)
+
+        self.assertFalse(revalidate_before_use(symlink, self.base_dir))
+
+    def test_deleted_file_fails(self):
+        """Deleted file should fail re-validation."""
+        subdir = self.base_dir / "project"
+        subdir.mkdir()
+        test_file = subdir / "test.jsonl"
+        test_file.write_text('{}')
+        test_file.unlink()
+
+        self.assertFalse(revalidate_before_use(test_file, self.base_dir))
+
+    def test_file_swapped_to_symlink_fails(self):
+        """File swapped to symlink should fail re-validation."""
+        subdir = self.base_dir / "project"
+        subdir.mkdir()
+        test_file = subdir / "test.jsonl"
+        test_file.write_text('{}')
+
+        # Simulate attack: swap file for symlink to outside
+        outside_file = Path(self.temp_dir) / "outside.jsonl"
+        outside_file.write_text('{"hacked": true}')
+        test_file.unlink()
+        test_file.symlink_to(outside_file)
+
+        self.assertFalse(revalidate_before_use(test_file, self.base_dir))
 
 
 if __name__ == "__main__":
