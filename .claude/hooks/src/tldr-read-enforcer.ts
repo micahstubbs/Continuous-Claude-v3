@@ -377,21 +377,29 @@ async function main() {
   const filePath = input.tool_input.file_path || '';
 
   // SECURITY FIX: Validate file path to prevent path traversal (F3)
-  // Only validate if CLAUDE_PROJECT_DIR is set (otherwise skip validation gracefully)
-  if (process.env.CLAUDE_PROJECT_DIR) {
-    const pathValidation = validateTLDRPath(filePath);
-    if (!pathValidation.valid) {
-      // Path validation failed - block with security message
-      const output: HookOutput = {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: `🔒 Path validation failed: ${pathValidation.error}`,
-        }
-      };
-      console.log(JSON.stringify(output));
-      return;
-    }
+  // Import validateFilePath for fallback when CLAUDE_PROJECT_DIR is unset
+  const { validateFilePath } = await import('./shared/secure-path-validator.js');
+
+  // Determine base directory: prefer CLAUDE_PROJECT_DIR, fall back to input.cwd or process.cwd()
+  const baseDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
+  const pathValidation = validateFilePath(filePath, {
+    baseDir,
+    allowSymlinks: true,
+    mustExist: true,  // File must exist for TLDR to read
+    allowedPaths: [],
+  });
+
+  if (!pathValidation.valid) {
+    // Path validation failed - block with security message
+    const output: HookOutput = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `🔒 Path validation failed: ${pathValidation.error}`,
+      }
+    };
+    console.log(JSON.stringify(output));
+    return;
   }
 
   // Allow non-code files

@@ -40,15 +40,16 @@ export function ripgrepFallbackSecure(pattern: string, projectDir: string): TLDR
         }
 
         // SECURE: spawnSync with argument array
-        // Pattern is passed as an argument, not interpolated into shell command
+        // Pattern is passed after -- to prevent option parsing if it starts with -
         const result = spawnSync('rg', [
-            pattern,           // SECURE: passed as argument, not shell-interpolated
-            resolvedDir,       // Validated path
             '--type', 'py',
             '--line-number',
             '--max-count', '10',
             '--no-heading',    // Easier to parse
-            '--color', 'never' // No ANSI codes in output
+            '--color', 'never', // No ANSI codes in output
+            '--',              // SECURITY: End of options, pattern cannot be parsed as flag
+            pattern,           // SECURE: passed as argument after --
+            resolvedDir,       // Validated path
         ], {
             encoding: 'utf-8',
             timeout: 3000,
@@ -107,8 +108,8 @@ export function secureRipgrepSearch(
             return [];
         }
 
-        // Build argument array safely
-        const args: string[] = [pattern, resolvedPath];
+        // Build argument array safely - options first, then -- pattern path
+        const args: string[] = [];
 
         if (options.fileType) {
             // Validate file type is alphanumeric
@@ -130,6 +131,11 @@ export function secureRipgrepSearch(
         if (options.wholeWord) {
             args.push('--word-regexp');
         }
+
+        // SECURITY: End of options, pattern cannot be parsed as flag
+        args.push('--');
+        args.push(pattern);
+        args.push(resolvedPath);
 
         const result = spawnSync('rg', args, {
             encoding: 'utf-8',
