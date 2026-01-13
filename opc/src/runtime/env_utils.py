@@ -3,14 +3,56 @@
 This module provides:
 - .env file loading via python-dotenv
 - ${VAR} and ${VAR:-default} expansion in config values
+
+Security notes (F5 mitigation, CVSS 6.1):
+- Env var expansion can leak sensitive values if used in network configs
+- Project .env files are untrusted and could inject malicious values
+- Use SENSITIVE_ENV_VARS allowlist to prevent accidental exposure
 """
 
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger("mcp_execution.env_utils")
+
+# Security: Sensitive env vars that should NOT be expanded into network configs
+# These vars should only be used for local configuration
+SENSITIVE_ENV_VARS = {
+    # AWS credentials
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    # GCP credentials
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    # Azure credentials
+    "AZURE_CLIENT_ID",
+    "AZURE_CLIENT_SECRET",
+    "AZURE_TENANT_ID",
+    # Database credentials
+    "DATABASE_URL",
+    "DB_PASSWORD",
+    "POSTGRES_PASSWORD",
+    "MYSQL_PASSWORD",
+    # API keys
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "API_KEY",
+    "SECRET_KEY",
+    # SSH/GPG
+    "SSH_PRIVATE_KEY",
+    "GPG_PRIVATE_KEY",
+    # Generic sensitive patterns
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
+    "PRIVATE_KEY",
+}
 
 # Pattern for ${VAR} or ${VAR:-default}
 ENV_VAR_PATTERN = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}")
@@ -36,15 +78,37 @@ def find_project_root(start_dir: Path) -> Path:
     return start_dir  # Fallback to original if no .git found
 
 
-def expand_env_vars(value: str) -> str:
+def is_sensitive_var(var_name: str) -> bool:
+    """Check if a variable name matches sensitive patterns.
+
+    Args:
+        var_name: Environment variable name
+
+    Returns:
+        True if the variable is sensitive and should not be expanded into network configs
+    """
+    var_upper = var_name.upper()
+    # Direct match
+    if var_upper in SENSITIVE_ENV_VARS:
+        return True
+    # Pattern match for common sensitive suffixes
+    sensitive_suffixes = ("_KEY", "_SECRET", "_PASSWORD", "_TOKEN", "_CREDENTIALS")
+    return any(var_upper.endswith(suffix) for suffix in sensitive_suffixes)
+
+
+def expand_env_vars(value: str, warn_on_sensitive: bool = True) -> str:
     """Expand environment variables in a string.
 
     Supports:
     - ${VAR} - expands to env var value or empty string
     - ${VAR:-default} - expands to env var value or default
 
+    Security (F5 mitigation): Warns when expanding sensitive variables that
+    could leak credentials if used in network configurations.
+
     Args:
         value: String potentially containing ${VAR} patterns
+        warn_on_sensitive: Whether to log warnings for sensitive vars
 
     Returns:
         String with all env vars expanded
@@ -53,6 +117,14 @@ def expand_env_vars(value: str) -> str:
     def replacer(match: re.Match[str]) -> str:
         var_name = match.group(1)
         default = match.group(2)  # May be None
+
+        # Security: Warn about sensitive variable expansion
+        if warn_on_sensitive and is_sensitive_var(var_name):
+            logger.warning(
+                f"Security: Expanding sensitive env var ${{{var_name}}}. "
+                "Ensure this is not used in network configurations."
+            )
+
         env_value = os.environ.get(var_name)
         if env_value is not None:
             return env_value
@@ -80,7 +152,7 @@ def expand_env_vars_in_config(config: Any) -> Any:
         return config
 
 
-def load_project_env(start_path: Path | None = None) -> bool:
+def load_project_env(start_path: Path | None = None, warn_untrusted: bool = True) -> bool:
     """Load .env file from project root, with global fallback.
 
     Searches for .env in:
@@ -89,8 +161,12 @@ def load_project_env(start_path: Path | None = None) -> bool:
 
     Does not override existing environment variables.
 
+    Security (F5 mitigation): Project .env files are untrusted and could
+    inject malicious values. A warning is logged when loading from projects.
+
     Args:
         start_path: Directory to search for .env (default: cwd)
+        warn_untrusted: Whether to warn about untrusted project .env files
 
     Returns:
         True if .env was loaded, False otherwise
@@ -108,6 +184,11 @@ def load_project_env(start_path: Path | None = None) -> bool:
 
     # Load local .env (higher priority, but doesn't override existing)
     if env_file.exists():
+        if warn_untrusted:
+            logger.info(
+                f"Security: Loading .env from project directory: {env_file}. "
+                "Verify this is a trusted project."
+            )
         load_dotenv(env_file, override=False)
         loaded = True
 
