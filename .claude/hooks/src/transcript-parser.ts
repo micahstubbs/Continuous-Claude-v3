@@ -6,6 +6,12 @@
  */
 
 import * as fs from 'fs';
+import {
+  escapeYamlScalar,
+  escapeYamlListItem,
+  validateSessionName,
+  escapeTodoWriteContent,
+} from './shared/yaml-escaper.js';
 
 // ============================================================================
 // Type Definitions
@@ -220,36 +226,46 @@ export function generateAutoHandoff(summary: TranscriptSummary, sessionName: str
   const dateOnly = timestamp.split('T')[0];
   const lines: string[] = [];
 
+  // Security: Validate session name (F1 mitigation)
+  let safeSessionName: string;
+  try {
+    safeSessionName = validateSessionName(sessionName);
+  } catch {
+    safeSessionName = 'auto_compact_session';
+  }
+
   // Extract goal and now from todos
   const inProgress = summary.lastTodos.filter(t => t.status === 'in_progress');
   const pending = summary.lastTodos.filter(t => t.status === 'pending');
   const completed = summary.lastTodos.filter(t => t.status === 'completed');
 
-  const currentTask = inProgress[0]?.content || pending[0]?.content || 'Continue from auto-compact';
+  // Security: Escape todo content to prevent YAML injection (F1 mitigation)
+  const rawCurrentTask = inProgress[0]?.content || pending[0]?.content || 'Continue from auto-compact';
+  const currentTask = escapeTodoWriteContent(rawCurrentTask);
   const goalSummary = completed.length > 0
     ? `Completed ${completed.length} task(s) before auto-compact`
     : 'Session auto-compacted';
 
   // YAML frontmatter
   lines.push('---');
-  lines.push(`session: ${sessionName}`);
+  lines.push(`session: ${safeSessionName}`);
   lines.push(`date: ${dateOnly}`);
   lines.push('status: partial');
   lines.push('outcome: PARTIAL_PLUS');
   lines.push('---');
   lines.push('');
 
-  // Required fields for statusline
-  lines.push(`goal: ${goalSummary}`);
+  // Required fields for statusline - currentTask already escaped
+  lines.push(`goal: ${escapeYamlScalar(goalSummary)}`);
   lines.push(`now: ${currentTask}`);
   lines.push('test: # No test command captured');
   lines.push('');
 
-  // Done this session
+  // Done this session - Security: Use escapeYamlListItem (F2 mitigation)
   lines.push('done_this_session:');
   if (completed.length > 0) {
     completed.forEach(t => {
-      lines.push(`  - task: "${t.content.replace(/"/g, '\\"')}"`);
+      lines.push(`  - task: ${escapeYamlListItem(t.content)}`);
       lines.push('    files: []');
     });
   } else {
@@ -258,23 +274,22 @@ export function generateAutoHandoff(summary: TranscriptSummary, sessionName: str
   }
   lines.push('');
 
-  // Blockers (from errors)
+  // Blockers (from errors) - Security: Use escapeYamlListItem (F2 mitigation)
   lines.push('blockers:');
   if (summary.errorsEncountered.length > 0) {
     summary.errorsEncountered.slice(0, 3).forEach(e => {
-      const safeError = e.replace(/"/g, '\\"').substring(0, 100);
-      lines.push(`  - "${safeError}"`);
+      lines.push(`  - ${escapeYamlListItem(e.substring(0, 100))}`);
     });
   } else {
     lines.push('  []');
   }
   lines.push('');
 
-  // Questions (pending tasks as questions)
+  // Questions (pending tasks as questions) - Security: Use escapeYamlListItem (F2 mitigation)
   lines.push('questions:');
   if (pending.length > 0) {
     pending.slice(0, 3).forEach(t => {
-      lines.push(`  - "Resume: ${t.content.replace(/"/g, '\\"')}"`);
+      lines.push(`  - ${escapeYamlListItem(`Resume: ${t.content}`)}`);
     });
   } else {
     lines.push('  []');
@@ -311,14 +326,14 @@ export function generateAutoHandoff(summary: TranscriptSummary, sessionName: str
   }
   lines.push('');
 
-  // Next steps
+  // Next steps - Security: Use escapeYamlListItem (F2 mitigation)
   lines.push('next:');
   if (inProgress.length > 0) {
-    lines.push(`  - "Continue: ${inProgress[0].content.replace(/"/g, '\\"')}"`);
+    lines.push(`  - ${escapeYamlListItem(`Continue: ${inProgress[0].content}`)}`);
   }
   if (pending.length > 0) {
     pending.slice(0, 2).forEach(t => {
-      lines.push(`  - "${t.content.replace(/"/g, '\\"')}"`);
+      lines.push(`  - ${escapeYamlListItem(t.content)}`);
     });
   }
   if (inProgress.length === 0 && pending.length === 0) {
@@ -326,13 +341,13 @@ export function generateAutoHandoff(summary: TranscriptSummary, sessionName: str
   }
   lines.push('');
 
-  // Files
+  // Files - Security: Use escapeYamlListItem for file paths (F2 mitigation)
   lines.push('files:');
   lines.push('  created: []');
   lines.push('  modified:');
   if (summary.filesModified.length > 0) {
     summary.filesModified.slice(0, 10).forEach(f => {
-      lines.push(`    - "${f}"`);
+      lines.push(`    - ${escapeYamlListItem(f)}`);
     });
   } else {
     lines.push('    []');
